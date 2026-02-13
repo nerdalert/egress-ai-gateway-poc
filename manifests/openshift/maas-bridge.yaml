@@ -1,0 +1,80 @@
+# Bridge: Routes external model requests from the MaaS gateway to the
+# wg-ai-gateway Envoy proxy.
+#
+# Token exchange flow:
+#   1. User authenticates with OpenShift token
+#   2. POST /maas-api/v1/tokens -> gets MaaS SA token (audience: maas-default-gateway-sa)
+#   3. User sends SA token to /external/v1/chat/completions
+#   4. AuthPolicy validates the SA token, injects userid
+#   5. Request forwarded to wg-ai-gateway Envoy -> external model
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: external-model-bridge
+  namespace: default
+spec:
+  parentRefs:
+  - name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/external/"
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/"
+    backendRefs:
+    - name: envoy-poc-gateway
+      port: 80
+---
+# AuthPolicy for the external model bridge.
+#
+# Validates MaaS SA tokens (same audience as on-prem models).
+# Does NOT perform SubjectAccessReview (external models have no llminferenceservice).
+# Does NOT perform tier lookup (caused 500 errors in POC, deferred to next iteration).
+#
+# Token mapping design for future iterations:
+#   - Per-tenant: SA token namespace encodes the tier (e.g., maas-default-gateway-tier-free)
+#   - Per-group: tier lookup via MaaS API /v1/tiers/lookup (needs reliability fix)
+#   - Per-provider: authorization rules can restrict which tiers access which providers
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: external-bridge-auth
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: external-model-bridge
+  rules:
+    authentication:
+      service-accounts:
+        kubernetesTokenReview:
+          audiences:
+          - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                # Extract tier from the SA namespace (e.g., "maas-default-gateway-tier-free" -> "free")
+                tier:
+                  expression: |
+                    auth.identity.user.username.split(":")[2].split("-tier-")[1]

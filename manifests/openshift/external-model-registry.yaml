@@ -1,0 +1,19 @@
+# External Model Registry ConfigMap
+# Lists external models that should appear in the MaaS /v1/models response.
+# The maas-api reads this ConfigMap and merges these models with KServe-discovered models.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-model-registry
+  namespace: opendatahub
+  labels:
+    app: maas-api
+    component: external-models
+data:
+  models: |
+    - id: gpt-4-external
+      provider: openai
+      backend: external-model-backend
+    - id: claude-3-sonnet-external
+      provider: anthropic
+      backend: anthropic-backend

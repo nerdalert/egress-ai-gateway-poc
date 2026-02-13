@@ -1,0 +1,155 @@
+diff --git a/maas-api/cmd/main.go b/maas-api/cmd/main.go
+index a079e22..42013c6 100644
+--- a/maas-api/cmd/main.go
++++ b/maas-api/cmd/main.go
+@@ -181,6 +181,7 @@ func registerHandlers(ctx context.Context, log *logger.Logger, router *gin.Engin
+ 		cluster.LLMInferenceServiceLister,
+ 		cluster.HTTPRouteLister,
+ 		models.GatewayRef{Name: cfg.GatewayName, Namespace: cfg.GatewayNamespace},
++		models.WithConfigMapLister(cluster.ConfigMapLister, cfg.Namespace),
+ 	)
+ 	if err != nil {
+ 		log.Fatal("Failed to create model manager", "error", err)
+diff --git a/maas-api/internal/models/kserve_llmisvc.go b/maas-api/internal/models/kserve_llmisvc.go
+index c4aa671..423f8ce 100644
+--- a/maas-api/internal/models/kserve_llmisvc.go
++++ b/maas-api/internal/models/kserve_llmisvc.go
+@@ -10,11 +10,14 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"gopkg.in/yaml.v3"
++
+ 	kservev1alpha1 "github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
+ 	kservelistersv1alpha1 "github.com/kserve/kserve/pkg/client/listers/serving/v1alpha1"
+ 	"golang.org/x/sync/errgroup"
+ 	corev1 "k8s.io/api/core/v1"
+ 	"k8s.io/apimachinery/pkg/labels"
++	corev1listers "k8s.io/client-go/listers/core/v1"
+ 	"knative.dev/pkg/apis"
+ 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+ 	gatewaylisters "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
+@@ -42,7 +45,9 @@ type GatewayRef struct {
+ type Manager struct {
+ 	llmIsvcLister   kservelistersv1alpha1.LLMInferenceServiceLister
+ 	httpRouteLister gatewaylisters.HTTPRouteLister
++	configMapLister corev1listers.ConfigMapLister
+ 	gatewayRef      GatewayRef
++	configNamespace string
+ 	logger          *logger.Logger
+ 	httpClient      *http.Client
+ }
+@@ -52,6 +57,7 @@ func NewManager(
+ 	llmIsvcLister kservelistersv1alpha1.LLMInferenceServiceLister,
+ 	httpRouteLister gatewaylisters.HTTPRouteLister,
+ 	gatewayRef GatewayRef,
++	opts ...ManagerOption,
+ ) (*Manager, error) {
+ 	if log == nil {
+ 		return nil, errors.New("log is required")
+@@ -63,7 +69,7 @@ func NewManager(
+ 		return nil, errors.New("httpRouteLister is required")
+ 	}
+ 
+-	return &Manager{
++	mgr := &Manager{
+ 		llmIsvcLister:   llmIsvcLister,
+ 		httpRouteLister: httpRouteLister,
+ 		gatewayRef:      gatewayRef,
+@@ -89,7 +95,22 @@ func NewManager(
+ 				IdleConnTimeout:     httpIdleConnTimeout,
+ 			},
+ 		},
+-	}, nil
++	}
++	for _, opt := range opts {
++		opt(mgr)
++	}
++	return mgr, nil
++}
++
++// ManagerOption configures optional Manager behavior.
++type ManagerOption func(*Manager)
++
++// WithConfigMapLister enables external model discovery from a ConfigMap.
++func WithConfigMapLister(lister corev1listers.ConfigMapLister, namespace string) ManagerOption {
++	return func(m *Manager) {
++		m.configMapLister = lister
++		m.configNamespace = namespace
++	}
+ }
+ 
+ // ListAvailableLLMs discovers and returns models from authorized LLMInferenceServices.
+@@ -128,9 +149,72 @@ func (m *Manager) ListAvailableLLMs(ctx context.Context, saToken string) ([]Mode
+ 
+ 	_ = g.Wait() // errors handled within goroutines
+ 
++	// Merge external models from ConfigMap (if configured)
++	if m.configMapLister != nil {
++		externalModels := m.listExternalModels()
++		authorizedModels = append(authorizedModels, externalModels...)
++	}
++
+ 	return authorizedModels, nil
+ }
+ 
++const externalModelRegistryConfigMap = "external-model-registry"
++
++// listExternalModels reads external model definitions from the external-model-registry ConfigMap.
++// Each key in the ConfigMap data is a model ID, and the value is a JSON object with model metadata.
++// If the ConfigMap doesn't exist, this returns nil (external models are optional).
++func (m *Manager) listExternalModels() []Model {
++	cm, err := m.configMapLister.ConfigMaps(m.configNamespace).Get(externalModelRegistryConfigMap)
++	if err != nil {
++		m.logger.Debug("External model registry ConfigMap not found, skipping",
++			"configmap", externalModelRegistryConfigMap,
++			"namespace", m.configNamespace,
++			"error", err,
++		)
++		return nil
++	}
++
++	modelsYAML, exists := cm.Data["models"]
++	if !exists {
++		m.logger.Debug("No 'models' key in external model registry ConfigMap")
++		return nil
++	}
++
++	var externalModels []ExternalModelEntry
++	if err := yaml.Unmarshal([]byte(modelsYAML), &externalModels); err != nil {
++		m.logger.Error("Failed to parse external model registry",
++			"error", err,
++		)
++		return nil
++	}
++
++	var result []Model
++	now := time.Now().Unix()
++	for _, entry := range externalModels {
++		model := Model{
++			Ready: true,
++		}
++		model.ID = entry.ID
++		model.Object = "model"
++		model.OwnedBy = entry.Provider
++		model.Created = now
++		result = append(result, model)
++	}
++
++	m.logger.Info("Discovered external models",
++		"count", len(result),
++	)
++
++	return result
++}
++
++// ExternalModelEntry represents a model in the external-model-registry ConfigMap.
++type ExternalModelEntry struct {
++	ID       string `yaml:"id"`
++	Provider string `yaml:"provider"`
++	Backend  string `yaml:"backend"`
++}
++
+ func (m *Manager) discoverModel(ctx context.Context, llmIsvc *kservev1alpha1.LLMInferenceService, saToken string) *Model {
+ 	llmIsvcMetadata := m.extractMetadata(llmIsvc)
+ 	if llmIsvcMetadata.URL == nil {
