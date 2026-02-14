@@ -1,0 +1,137 @@
+# Per-provider bridge routes from MaaS gateway to wg-ai-gateway Envoy.
+# Each provider gets its own HTTPRoute + AuthPolicy so Authorino injects
+# the correct API key for that provider.
+#
+# Paths:
+#   /external/openai/*    -> envoy /openai/*    -> openai-simulator
+#   /external/anthropic/* -> envoy /anthropic/* -> anthropic-simulator
+---
+# OpenAI bridge
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openai-bridge
+  namespace: default
+spec:
+  parentRefs:
+  - name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/external/openai/"
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/openai/"
+    backendRefs:
+    - name: envoy-poc-gateway
+      port: 80
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: openai-bridge-auth
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openai-bridge
+  rules:
+    authentication:
+      service-accounts:
+        kubernetesTokenReview:
+          audiences:
+          - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                tier:
+                  expression: |
+                    auth.identity.user.username.split(":")[2].split("-tier-")[1]
+        headers:
+          X-Provider-Api-Key:
+            plain:
+              expression: "'sk-openai-key-for-demo'"
+---
+# Anthropic bridge
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: anthropic-bridge
+  namespace: default
+spec:
+  parentRefs:
+  - name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/external/anthropic/"
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/anthropic/"
+    backendRefs:
+    - name: envoy-poc-gateway
+      port: 80
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: anthropic-bridge-auth
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: anthropic-bridge
+  rules:
+    authentication:
+      service-accounts:
+        kubernetesTokenReview:
+          audiences:
+          - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                tier:
+                  expression: |
+                    auth.identity.user.username.split(":")[2].split("-tier-")[1]
+        headers:
+          X-Provider-Api-Key:
+            plain:
+              expression: "'sk-ant-claude-key-for-demo'"

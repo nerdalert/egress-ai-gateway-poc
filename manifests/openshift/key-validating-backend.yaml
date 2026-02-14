@@ -1,0 +1,45 @@
+# Backend + route for the key-validating simulator.
+# Routes /secure/* through the wg-ai-gateway Envoy to the key-validating-simulator.
+# The simulator checks X-Provider-Api-Key and returns 401 if missing/wrong.
+#
+# Test flow:
+#   Direct (no bridge, no Authorino): GET /secure/v1/models -> 401 (no key injected)
+#   Via bridge (Authorino injects key): GET /external/secure/v1/models -> 200
+apiVersion: ainetworking.prototype.x-k8s.io/v0alpha0
+kind: XBackendDestination
+metadata:
+  name: key-validating-backend
+  namespace: default
+spec:
+  destination:
+    type: Fqdn
+    fqdn:
+      hostname: key-validating-simulator.external-models.svc.cluster.local
+    ports:
+    - number: 8000
+      protocol: HTTP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: key-validating-route
+  namespace: default
+spec:
+  parentRefs:
+  - name: poc-gateway
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/secure/"
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/"
+    backendRefs:
+    - name: key-validating-backend
+      kind: Backend
+      group: ainetworking.prototype.x-k8s.io
+      port: 8000

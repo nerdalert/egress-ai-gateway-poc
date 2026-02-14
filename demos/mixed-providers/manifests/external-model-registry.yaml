@@ -1,0 +1,17 @@
+# External model registry for mixed-providers demo.
+# Lists both OpenAI and Anthropic external models alongside local KServe models.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-model-registry
+  namespace: opendatahub
+  labels:
+    app: maas-api
+data:
+  models: |
+    - id: gpt-4
+      provider: openai
+      backend: openai-backend
+    - id: claude-3-sonnet
+      provider: anthropic
+      backend: anthropic-backend

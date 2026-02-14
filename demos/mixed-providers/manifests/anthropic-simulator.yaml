@@ -1,0 +1,56 @@
+# Anthropic/Claude provider simulator.
+# Validates X-Provider-Api-Key: sk-ant-claude-key-for-demo
+# Model: claude-3-sonnet
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anthropic-simulator
+  namespace: external-models
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: anthropic-simulator
+  template:
+    metadata:
+      labels:
+        app: anthropic-simulator
+    spec:
+      containers:
+      - name: simulator
+        image: ghcr.io/nerdalert/provider-sim:latest
+        args:
+        - --port
+        - "8000"
+        - --model
+        - claude-3-sonnet
+        - --api-key
+        - sk-ant-claude-key-for-demo
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 2
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anthropic-simulator
+  namespace: external-models
+spec:
+  selector:
+    app: anthropic-simulator
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000

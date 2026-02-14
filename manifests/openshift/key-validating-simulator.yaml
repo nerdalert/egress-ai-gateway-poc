@@ -1,0 +1,59 @@
+# Key-validating external model simulator.
+# Returns OpenAI-compatible responses if X-Provider-Api-Key header matches.
+# Returns 401 if the key is missing or wrong.
+# This proves the full chain: user auth -> tier -> key injection -> provider validates key.
+#
+# Runs alongside the existing llm-d-inference-sim (which ignores keys).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: key-validating-simulator
+  namespace: external-models
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: key-validating-simulator
+  template:
+    metadata:
+      labels:
+        app: key-validating-simulator
+    spec:
+      containers:
+      - name: simulator
+        image: ghcr.io/nerdalert/provider-sim:latest
+        args:
+        - --port
+        - "8000"
+        - --model
+        - gpt-4-external
+        - --api-key
+        - sk-poc-hardcoded-api-key-for-testing
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 2
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: key-validating-simulator
+  namespace: external-models
+spec:
+  selector:
+    app: key-validating-simulator
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000

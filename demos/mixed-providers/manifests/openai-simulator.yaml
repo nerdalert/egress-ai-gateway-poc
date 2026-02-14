@@ -1,0 +1,61 @@
+# OpenAI provider simulator.
+# Validates X-Provider-Api-Key: sk-openai-key-for-demo
+# Model: gpt-4
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-models
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-simulator
+  namespace: external-models
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openai-simulator
+  template:
+    metadata:
+      labels:
+        app: openai-simulator
+    spec:
+      containers:
+      - name: simulator
+        image: ghcr.io/nerdalert/provider-sim:latest
+        args:
+        - --port
+        - "8000"
+        - --model
+        - gpt-4
+        - --api-key
+        - sk-openai-key-for-demo
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 2
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-simulator
+  namespace: external-models
+spec:
+  selector:
+    app: openai-simulator
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
