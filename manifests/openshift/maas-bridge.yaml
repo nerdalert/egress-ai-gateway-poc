@@ -5,8 +5,14 @@
 #   1. User authenticates with OpenShift token
 #   2. POST /maas-api/v1/tokens -> gets MaaS SA token (audience: maas-default-gateway-sa)
 #   3. User sends SA token to /external/v1/chat/completions
-#   4. AuthPolicy validates the SA token, injects userid
-#   5. Request forwarded to wg-ai-gateway Envoy -> external model
+#   4. AuthPolicy validates the SA token, injects userid + tier
+#   5. AuthPolicy injects provider API key as X-Provider-Api-Key header
+#   6. Request forwarded to wg-ai-gateway Envoy -> external model
+#
+# API key injection:
+#   Currently uses a hardcoded static value for POC validation.
+#   Future: MaaS API key service (Postgres-backed) will serve keys via
+#   metadata.http callout, mapped by (tier, provider).
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -32,16 +38,6 @@ spec:
     - name: envoy-poc-gateway
       port: 80
 ---
-# AuthPolicy for the external model bridge.
-#
-# Validates MaaS SA tokens (same audience as on-prem models).
-# Does NOT perform SubjectAccessReview (external models have no llminferenceservice).
-# Does NOT perform tier lookup (caused 500 errors in POC, deferred to next iteration).
-#
-# Token mapping design for future iterations:
-#   - Per-tenant: SA token namespace encodes the tier (e.g., maas-default-gateway-tier-free)
-#   - Per-group: tier lookup via MaaS API /v1/tiers/lookup (needs reliability fix)
-#   - Per-provider: authorization rules can restrict which tiers access which providers
 apiVersion: kuadrant.io/v1
 kind: AuthPolicy
 metadata:
@@ -68,13 +64,29 @@ spec:
           ttl: 600
     response:
       success:
+        # Inject identity/tier into dynamic metadata (for rate limiting)
         filters:
           identity:
             json:
               properties:
                 userid:
                   expression: auth.identity.userid
-                # Extract tier from the SA namespace (e.g., "maas-default-gateway-tier-free" -> "free")
                 tier:
                   expression: |
                     auth.identity.user.username.split(":")[2].split("-tier-")[1]
+        # Inject provider API key as an HTTP header into the upstream request
+        # The upstream (wg-ai-gateway Envoy -> external model) receives this header.
+        #
+        # POC: hardcoded static value to prove the injection mechanism works.
+        # Production: replace with metadata.http callout to MaaS API key service:
+        #   metadata:
+        #     provider-key:
+        #       http:
+        #         urlExpression: "'http://maas-api.opendatahub.svc:8080/v1/provider-keys?provider=openai&tier=' + auth.identity.user.username.split(':')[2].split('-tier-')[1]"
+        #   response.success.headers.X-Provider-Api-Key:
+        #     plain:
+        #       expression: auth.metadata['provider-key'].key
+        headers:
+          X-Provider-Api-Key:
+            plain:
+              expression: "'sk-poc-hardcoded-api-key-for-testing'"
