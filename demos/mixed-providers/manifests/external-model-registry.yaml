@@ -15,3 +15,6 @@ data:
     - id: claude-3-sonnet
       provider: anthropic
       backend: anthropic-backend
+    - id: Qwen/Qwen3-0.6B
+      provider: vllm
+      backend: vllm-backend

@@ -6,7 +6,7 @@ external model endpoints alongside on-prem KServe/vLLM models.
 
 **[Quickstart Guide](quickstart.md)** - Single-provider deployment in 4 steps.
 
-**[Mixed Providers Demo](demos/mixed-providers/)** - On-prem + OpenAI + Anthropic behind a single gateway.
+**[Mixed Providers Demo](demos/mixed-providers/)** - On-prem + simulated providers + external vLLM behind a single gateway.
 
 ## What This Proves
 
@@ -47,6 +47,12 @@ MaaS Gateway (maas.$CLUSTER_DOMAIN, Istio-based)
   |          URL rewrite: /anthropic/* -> /*
   |          -> anthropic-simulator (or api.anthropic.com once TLS supported)
   |
+  |-- /external/vllm/*       -> Authorino validates token + overrides Authorization header
+  |     URL rewrite: /external/vllm/* -> /vllm/*
+  |     -> wg-ai-gateway Envoy
+  |          URL rewrite: /vllm/* -> /*
+  |          -> remote vLLM instance (HTTP, real GPU inference)
+  |
   |-- /llm/<model>/*          -> KServe LLMInferenceService (on-prem, single gateway)
 ```
 
@@ -57,7 +63,13 @@ See [quickstart.md](quickstart.md) for step-by-step deployment and validation.
 **Prerequisites:**
 - OpenShift cluster with MaaS deployed (`deploy-rhoai-stable.sh`)
 - `kubectl`/`oc` with cluster-admin access
-- wg-ai-gateway repo cloned (for CRDs)
+- [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) repo cloned (for CRDs)
+
+**Forked images** (used until upstream PRs merge):
+- Controller: `ghcr.io/nerdalert/wg-ai-gateway:latest` — includes
+  [prefix rewrite fix](https://github.com/kubernetes-sigs/wg-ai-gateway/pull/38)
+- MaaS API: `ghcr.io/nerdalert/maas-api:external-models` — adds
+  ConfigMap-based external model discovery
 
 ## What Works
 
@@ -66,7 +78,7 @@ See [quickstart.md](quickstart.md) for step-by-step deployment and validation.
 | wg-ai-gateway controller on OpenShift | Working |
 | FQDN backend routing to external model simulators | Working |
 | Per-provider API key injection | Working (Authorino `response.success.headers`) |
-| Multi-provider routing (OpenAI + Anthropic + on-prem) | Working |
+| Multi-provider routing (OpenAI + Anthropic + vLLM + on-prem) | Working |
 | MaaS SA token auth on external routes | Working |
 | Unified model listing (local + external) | Working |
 | TokenRateLimitPolicy on external models | Working (free: 100 tokens/min) |
@@ -102,7 +114,7 @@ egress-ai-gateway-poc/
       key-validating-simulator.yaml  provider-sim with API key validation
       key-validating-backend.yaml    XBackendDestination + HTTPRoute for key-validating-sim
   demos/
-    mixed-providers/          Multi-provider demo (OpenAI + Anthropic + local)
+    mixed-providers/          Multi-provider demo (OpenAI + Anthropic + vLLM + local)
       README.md               Demo deployment + validation (5 steps)
       manifests/              Per-provider simulators, backends, routes, auth policies
   patches/

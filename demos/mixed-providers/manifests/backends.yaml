@@ -28,3 +28,19 @@ spec:
     ports:
     - number: 8000
       protocol: HTTP
+---
+# Optional: external vLLM instance.
+# Replace the hostname with your vLLM server's IP or FQDN.
+apiVersion: ainetworking.prototype.x-k8s.io/v0alpha0
+kind: XBackendDestination
+metadata:
+  name: vllm-backend
+  namespace: default
+spec:
+  destination:
+    type: Fqdn
+    fqdn:
+      hostname: ec2-34-202-9-189.compute-1.amazonaws.com
+    ports:
+    - number: 8000
+      protocol: HTTP

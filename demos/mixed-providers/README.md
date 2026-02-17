@@ -1,19 +1,26 @@
-# Mixed Providers Demo: On-Prem + OpenAI + Anthropic
+# Mixed Providers Demo: On-Prem + Simulated Providers + External vLLM
 
-Demonstrates three model providers behind a single MaaS gateway:
+Demonstrates four model providers behind a single MaaS gateway:
 
 | Provider | Model | Type | API Key | Endpoint |
 |----------|-------|------|---------|----------|
 | OpenAI (simulated) | `gpt-4` | External | `sk-openai-key-for-demo` | `/external/openai/v1/chat/completions` |
 | Anthropic (simulated) | `claude-3-sonnet` | External | `sk-ant-claude-key-for-demo` | `/external/anthropic/v1/chat/completions` |
+| vLLM (remote, optional) | `Qwen/Qwen3-0.6B` | External | `change-me-super-secret` | `/external/vllm/v1/chat/completions` |
 | On-prem (KServe) | `facebook/opt-125m` | Local | None (MaaS SA token only) | `/llm/facebook-opt-125m-simulated/v1/chat/completions` |
 
 Each external provider has its own API key injected by Authorino. The user
-authenticates once with a MaaS SA token and accesses all three providers.
+authenticates once with a MaaS SA token and accesses all providers.
 
 **Prerequisites:**
 - MaaS is deployed via `deploy-rhoai-stable.sh`
-- wg-ai-gateway repo cloned (for CRDs)
+- [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) repo cloned (for CRDs)
+
+**Forked images** (used until upstream PRs merge):
+- Controller: `ghcr.io/nerdalert/wg-ai-gateway:latest` — includes
+  [prefix rewrite fix](https://github.com/kubernetes-sigs/wg-ai-gateway/pull/38)
+- MaaS API: `ghcr.io/nerdalert/maas-api:external-models` — adds
+  ConfigMap-based external model discovery
 
 ```bash
 # Adjust these to match your clone locations
@@ -74,13 +81,61 @@ kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/backends.yaml
 kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/routes.yaml
 ```
 
+### Step 3a (Optional): Deploy external vLLM backend
+
+Adds a real remote vLLM instance as a 4th provider. Requires a vLLM server
+running on a GPU machine accessible from the cluster over HTTP.
+
+**Start vLLM on the remote host:**
+
+```bash
+export VLLM_API_KEY="change-me-super-secret"
+docker run --rm -it \
+  --gpus all \
+  --ipc=host \
+  -p 8000:8000 \
+  -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-0.6B \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --api-key "$VLLM_API_KEY"
+```
+
+**Verify the vLLM instance is reachable:**
+
+```bash
+curl http://<VLLM_HOST>:8000/v1/chat/completions \
+  -H "Authorization: Bearer change-me-super-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Say hi in one sentence."}]}'
+```
+
+**Update the hardcoded vLLM host** in `backends.yaml` to match your server.
+The default is `ec2-34-202-9-189.compute-1.amazonaws.com` — feel free to use
+this endpoint for testing if it is still up at the time of reading. Files to
+update:
+
+| File | Field | Default |
+|------|-------|---------|
+| `backends.yaml` | `vllm-backend` → `spec.destination.fqdn.hostname` | `ec2-34-202-9-189.compute-1.amazonaws.com` |
+| `bridge.yaml` | `vllm-bridge-auth` → `response.success.headers.Authorization` | `Bearer change-me-super-secret` |
+
+```bash
+kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/backends.yaml
+```
+
+Unlike the simulators, vLLM uses standard `Authorization: Bearer` auth. The
+bridge AuthPolicy overrides the `Authorization` header (replacing the MaaS SA
+token with the vLLM API key) after authentication is complete.
+
 ### Step 4: Deploy per-provider routes + API key injection on MaaS Gateway
 
 Creates per-provider HTTPRoutes on the MaaS Gateway that route
-`/external/openai/*` and `/external/anthropic/*` to the wg-ai-gateway Envoy.
-Each route has its own Kuadrant AuthPolicy that validates the user's MaaS SA
-token and injects the provider-specific API key as an `X-Provider-Api-Key`
-header into the upstream request via Authorino's `response.success.headers`.
+`/external/openai/*`, `/external/anthropic/*`, and `/external/vllm/*` to the
+wg-ai-gateway Envoy. Each route has its own Kuadrant AuthPolicy that validates
+the user's MaaS SA token and injects the provider-specific API key into the
+upstream request via Authorino's `response.success.headers`.
 
 ```bash
 kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/bridge.yaml
@@ -88,10 +143,11 @@ kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/bridge.yaml
 
 ### Step 5: Enable external model discovery in MaaS API
 
-Deploys a ConfigMap listing external models (`gpt-4`, `claude-3-sonnet`) and
-patches the MaaS API with a modified image that reads it. The patched MaaS API
-merges these external models with KServe-discovered local models so
-`GET /v1/models` returns all three providers in a single response.
+Deploys a ConfigMap listing external models (`gpt-4`, `claude-3-sonnet`, and
+optionally `Qwen/Qwen3-0.6B`) and patches the MaaS API with a modified image
+that reads it. The patched MaaS API merges these external models with
+KServe-discovered local models so `GET /v1/models` returns all providers in a
+single response.
 
 ```bash
 kubectl apply -f $POC_DIR/demos/mixed-providers/manifests/external-model-registry.yaml
@@ -129,17 +185,30 @@ curl -sSk -H "Authorization: Bearer $TOKEN" \
   -d '{"model":"claude-3-sonnet","messages":[{"role":"user","content":"Hello from Claude"}],"max_tokens":10}' \
   "https://${HOST}/external/anthropic/v1/chat/completions" | jq
 
-# 6. Chat with local model (on-prem KServe, no external key needed)
+# 6. Chat with vLLM (external, real model - requires Step 3a)
+curl -sSk -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Say hi in one sentence."}],"max_tokens":20}' \
+  "https://${HOST}/external/vllm/v1/chat/completions" | jq
+
+# 7. Chat with local model (on-prem KServe, no external key needed)
 curl -sSk -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model":"facebook/opt-125m","messages":[{"role":"user","content":"Hello from on-prem"}],"max_tokens":10}' \
   "https://${HOST}/llm/facebook-opt-125m-simulated/v1/chat/completions" | jq
 
-# 7. No auth -> 401 (all providers)
+# 8. No auth -> 401 (all providers)
 curl -sSk -o /dev/null -w "%{http_code}\n" "https://${HOST}/external/openai/v1/models"
 curl -sSk -o /dev/null -w "%{http_code}\n" "https://${HOST}/external/anthropic/v1/models"
+curl -sSk -o /dev/null -w "%{http_code}\n" "https://${HOST}/external/vllm/v1/models"
 
-# 8. Rate limiting (free tier: 100 tokens/min across all providers)
+# 9. Wrong API key -> 401 from vLLM (proves key injection is required)
+curl -sSk -H "Authorization: Bearer bogus-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}' \
+  "http://ec2-34-202-9-189.compute-1.amazonaws.com:8000/v1/chat/completions"
+
+# 10. Rate limiting (free tier: 100 tokens/min across all providers)
 for i in {1..16}; do
   curl -sSk -o /dev/null -w "%{http_code}\n" \
     -H "Authorization: Bearer $TOKEN" \
@@ -151,7 +220,7 @@ done
 
 ### Example Output
 
-**Model listing** (step 3) - all three providers in a single response:
+**Model listing** (step 3) - all providers in a single response:
 
 ```shell
 curl -sSk -H "Authorization: Bearer $TOKEN" "https://${HOST}/v1/models" | jq
@@ -177,6 +246,13 @@ curl -sSk -H "Authorization: Bearer $TOKEN" "https://${HOST}/v1/models" | jq
       "created": 1771301116,
       "object": "model",
       "owned_by": "anthropic",
+      "ready": true
+    },
+    {
+      "id": "Qwen/Qwen3-0.6B",
+      "created": 1771305975,
+      "object": "model",
+      "owned_by": "vllm",
       "ready": true
     }
   ],
@@ -214,9 +290,53 @@ $ curl -sSk -H "Authorization: Bearer $TOKEN" \
 }
 ```
 
+**External vLLM inference** (step 6):
+
+```shell
+curl -sSk -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Say hi in one sentence."}],"max_tokens":20}' \
+  "https://${HOST}/external/vllm/v1/chat/completions" | jq
+{
+  "id": "chatcmpl-dba5b1cc-67e8-4afc-9bdf-590667f7f444",
+  "object": "chat.completion",
+  "created": 1771307402,
+  "model": "Qwen/Qwen3-0.6B",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "reasoning_content": null,
+        "content": "<think>\nOkay, the user wants a one-sentence greeting. Let me think. It should be",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "length",
+      "stop_reason": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 14,
+    "total_tokens": 34,
+    "completion_tokens": 20,
+    "prompt_tokens_details": null
+  },
+  "prompt_logprobs": null
+}
+```
+
+**External vLLM negative test** pass an invalid key to vLLM
+
+```shell
+curl http://ec2-34-202-9-189.compute-1.amazonaws.com.:8000/v1/chat/completions   -H "Authorization: Bearer invalid-key" -H "Content-Type: application/json"   -d '{"model":"Qwen/Qwen3-0.6B","messages":[{"role":"user","content":"Say hi in one sentence."}]}'
+{"error":"Unauthorized"}
+```
+
+**On-prem inference** (step 7):
+
 Note: `facebook/opt-125m` is auto-discovered by MaaS via KServe. The external models come from the `external-model-registry` ConfigMap.
 
-**On-prem inference** (step 6):
 ```shell
 $ curl -sSk -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -250,12 +370,14 @@ $ curl -sSk -H "Authorization: Bearer $TOKEN" \
 
 | # | Test | Expected |
 |---|------|----------|
-| 3 | List models | `facebook/opt-125m` (local) + `gpt-4` + `claude-3-sonnet` (external) |
+| 3 | List models | `facebook/opt-125m` (local) + `gpt-4` + `claude-3-sonnet` + `Qwen/Qwen3-0.6B` (external) |
 | 4 | OpenAI chat | 200, completion from gpt-4 simulator |
 | 5 | Anthropic chat | 200, completion from claude-3-sonnet simulator |
-| 6 | Local model chat | 200, completion from KServe/vLLM simulator |
-| 7 | No auth | 401, 401 |
-| 8 | Rate limiting | 200s then 429s |
+| 6 | vLLM chat | 200, real completion from Qwen3-0.6B (requires Step 3a) |
+| 7 | Local model chat | 200, completion from KServe/vLLM simulator |
+| 8 | No auth | 401, 401, 401 |
+| 9 | Wrong API key to vLLM | 401, `{"error":"..."}` |
+| 10 | Rate limiting | 200s then 429s |
 
 ---
 
@@ -274,6 +396,9 @@ MaaS Gateway (maas.$CLUSTER_DOMAIN, Istio)
   │
   ├── /external/anthropic/*  → Authorino injects sk-ant-claude-key-for-demo
   │                            → wg-ai-gateway Envoy → anthropic-simulator
+  │
+  ├── /external/vllm/*       → Authorino overrides Authorization header
+  │                            → wg-ai-gateway Envoy → remote vLLM (HTTP)
   │
   ├── /llm/<model>/*         → Authorino validates SA token + SubjectAccessReview
   │                            → KServe InferenceService (on-prem vLLM)
@@ -329,6 +454,40 @@ Response flows back: Simulator → Envoy → Istio → Client
   {"model":"gpt-4","choices":[{"message":{"content":"..."}}],"usage":{...}}
 ```
 
+### E2E Traffic Flow: External vLLM (Optional)
+
+Similar to the OpenAI flow, but the key difference is auth header handling:
+vLLM uses standard `Authorization: Bearer` auth, so the AuthPolicy overrides
+the `Authorization` header instead of adding `X-Provider-Api-Key`. The backend
+is a remote machine (HTTP, not cluster-local).
+
+```
+Client
+  │  POST https://maas.$CLUSTER_DOMAIN/external/vllm/v1/chat/completions
+  │  Header: Authorization: Bearer <maas-sa-token>
+  │
+  ▼
+MaaS Gateway
+  │  1. AuthPolicy validates MaaS SA token
+  │  2. Overrides Authorization header → Bearer change-me-super-secret
+  │  3. URL rewrite: /external/vllm/* → /vllm/*
+  │  4. Forward to envoy-poc-gateway:80
+  │
+  ▼
+wg-ai-gateway Envoy
+  │  1. URL rewrite: /vllm/* → /*
+  │  2. Resolves vllm-backend → ec2-34-202-9-189.compute-1.amazonaws.com
+  │  3. K8s Endpoints routes to remote IP (e.g., 34.202.9.189:8000)
+  │
+  ▼
+Remote vLLM Instance (HTTP, real GPU inference)
+  │  Validates Authorization: Bearer change-me-super-secret
+  │  Runs Qwen/Qwen3-0.6B inference
+  │
+  ▼
+Response: {"model":"Qwen/Qwen3-0.6B","choices":[...],"usage":{...}}
+```
+
 ### E2E Traffic Flow: On-Prem Model
 
 The on-prem path does NOT traverse the wg-ai-gateway. It goes directly from
@@ -378,6 +537,7 @@ the same `/v1/chat/completions` path that `api.openai.com` expects.
 ## Teardown
 
 ```bash
+# Core resources
 kubectl delete -f demos/mixed-providers/manifests/bridge.yaml
 kubectl delete -f demos/mixed-providers/manifests/routes.yaml
 kubectl delete -f demos/mixed-providers/manifests/backends.yaml
