@@ -1,10 +1,11 @@
 // Key-validating inference simulator.
 // Returns OpenAI-compatible chat completion responses if the correct
-// API key is provided via X-Provider-Api-Key header. Returns 401 if
+// API key is provided via the configured header. Returns 401 if
 // the key is missing or wrong.
 //
 // Usage:
-//   provider-sim --port 8000 --api-key sk-poc-hardcoded-api-key-for-testing --model gpt-4-external
+//
+//	provider-sim --port 8000 --api-key sk-test-key --model gpt-4 --api-key-header Authorization
 package main
 
 import (
@@ -19,9 +20,10 @@ import (
 )
 
 var (
-	port   = flag.Int("port", 8000, "Listen port")
-	apiKey = flag.String("api-key", "", "Required API key (checked in X-Provider-Api-Key header)")
-	model  = flag.String("model", "gpt-4-external", "Model name to report")
+	port         = flag.Int("port", 8000, "Listen port")
+	apiKey       = flag.String("api-key", "", "Required API key value")
+	apiKeyHeader = flag.String("api-key-header", "Authorization", "Header to read the API key from")
+	model        = flag.String("model", "gpt-4-external", "Model name to report")
 )
 
 func main() {
@@ -50,30 +52,34 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Starting provider-sim on %s (model=%s, key-validation=enabled)", addr, *model)
+	log.Printf("Starting provider-sim on %s (model=%s, key-header=%s)", addr, *model, *apiKeyHeader)
 	log.Fatal(http.ListenAndServe(addr, handler))
 }
 
 func checkKey(w http.ResponseWriter, r *http.Request) bool {
-	key := r.Header.Get("X-Provider-Api-Key")
-	if key == "" {
+	raw := r.Header.Get(*apiKeyHeader)
+	if raw == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
-				"message": "Missing API key. Set X-Provider-Api-Key header.",
+				"message": fmt.Sprintf("Missing API key. Set %s header.", *apiKeyHeader),
 				"type":    "authentication_error",
 				"code":    "missing_api_key",
 			},
 		})
 		return false
 	}
+
+	// Strip "Bearer " prefix if present (standard Authorization header format)
+	key := strings.TrimPrefix(raw, "Bearer ")
+
 	if key != *apiKey {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
-				"message": fmt.Sprintf("Invalid API key provided: %s...%s", key[:4], key[len(key)-4:]),
+				"message": "Invalid API key.",
 				"type":    "authentication_error",
 				"code":    "invalid_api_key",
 			},

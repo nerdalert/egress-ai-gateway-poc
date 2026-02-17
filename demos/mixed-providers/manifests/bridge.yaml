@@ -1,6 +1,9 @@
 # Per-provider bridge routes from MaaS gateway to wg-ai-gateway Envoy.
 # Each provider gets its own HTTPRoute + AuthPolicy so Authorino injects
-# the correct API key for that provider.
+# the correct API key for that provider using the provider's native header:
+#   OpenAI:    Authorization: Bearer <key>
+#   Anthropic: x-api-key: <key>
+#   vLLM:      Authorization: Bearer <key>
 #
 # Paths:
 #   /external/openai/*    -> envoy /openai/*    -> openai-simulator
@@ -67,9 +70,9 @@ spec:
                   expression: |
                     auth.identity.user.username.split(":")[2].split("-tier-")[1]
         headers:
-          X-Provider-Api-Key:
+          Authorization:
             plain:
-              expression: "'sk-openai-key-for-demo'"
+              expression: "'Bearer sk-openai-key-for-demo'"
 ---
 # Anthropic bridge
 apiVersion: gateway.networking.k8s.io/v1
@@ -132,13 +135,11 @@ spec:
                   expression: |
                     auth.identity.user.username.split(":")[2].split("-tier-")[1]
         headers:
-          X-Provider-Api-Key:
+          x-api-key:
             plain:
               expression: "'sk-ant-claude-key-for-demo'"
 ---
 # vLLM bridge (optional - requires running remote vLLM instance)
-# Unlike simulators, vLLM uses standard Authorization: Bearer for API keys,
-# so we override the Authorization header instead of setting X-Provider-Api-Key.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

@@ -26,6 +26,8 @@ spec:
         - claude-3-sonnet
         - --api-key
         - sk-ant-claude-key-for-demo
+        - --api-key-header
+        - x-api-key
         ports:
         - containerPort: 8000
           name: http
@@ -36,10 +38,10 @@ spec:
           initialDelaySeconds: 2
         resources:
           requests:
-            cpu: 50m
+            cpu: 10m
             memory: 32Mi
           limits:
-            cpu: 200m
+            cpu: 100m
             memory: 64Mi
 ---
 apiVersion: v1

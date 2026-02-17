@@ -1,12 +1,12 @@
 # Egress AI Gateway POC: WG AI Gateway with External Model Routing on OpenShift
 
-Proof of concept integrating the Kubernetes SIG WG AI Gateway with Red Hat
+Proof of concept integrating the Kubernetes SIG WG AI Gateway with
 OpenShift AI Models-as-a-Service (MaaS) to route inference requests to
 external model endpoints alongside on-prem KServe/vLLM models.
 
-**[Quickstart Guide](quickstart.md)** - Single-provider deployment in 4 steps.
-
-**[Mixed Providers Demo](demos/mixed-providers/)** - On-prem + simulated providers + external vLLM behind a single gateway.
+**[Demo: On-Prem + Simulated Providers + External vLLM](demos/mixed-providers/)** -
+Four providers behind a single gateway with per-provider API key injection,
+unified model listing, and token rate limiting.
 
 ## What This Proves
 
@@ -56,17 +56,14 @@ MaaS Gateway (maas.$CLUSTER_DOMAIN, Istio-based)
   |-- /llm/<model>/*          -> KServe LLMInferenceService (on-prem, single gateway)
 ```
 
-## Quick Start
+## Prerequisites
 
-See [quickstart.md](quickstart.md) for step-by-step deployment and validation.
-
-**Prerequisites:**
 - OpenShift cluster with MaaS deployed (`deploy-rhoai-stable.sh`)
 - `kubectl`/`oc` with cluster-admin access
 - [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) repo cloned (for CRDs)
 
 **Forked images** (used until upstream PRs merge):
-- Controller: `ghcr.io/nerdalert/wg-ai-gateway:latest` — includes
+- Controller: `ghcr.io/nerdalert/wg-ai-gateway:prefix-rewrite-fix` — includes
   [prefix rewrite fix](https://github.com/kubernetes-sigs/wg-ai-gateway/pull/38)
 - MaaS API: `ghcr.io/nerdalert/maas-api:external-models` — adds
   ConfigMap-based external model discovery
@@ -92,32 +89,3 @@ See [quickstart.md](quickstart.md) for step-by-step deployment and validation.
 | Dynamic key lookup from Postgres | Needs MaaS API `/v1/provider-keys` endpoint |
 | Body-based routing | Route by model name in JSON body |
 | Real provider endpoints | Requires TLS origination |
-
-## Directory Structure
-
-```
-egress-ai-gateway-poc/
-  README.md                   This file
-  quickstart.md               Single-provider deployment (4 steps)
-  architecture.md             E2E traffic flows + component diagrams
-  simulator/                  Key-validating provider-sim (Go source + Dockerfile)
-  manifests/
-    common/
-      gateway.yaml            POC Gateway (port 80, GatewayClass wg-ai-gateway)
-    openshift/
-      controller.yaml         wg-ai-gateway controller (SCC-adapted)
-      simulator.yaml          Inference simulator (llm-d-inference-sim, no key validation)
-      external-model.yaml     XBackendDestination + HTTPRoutes for simulator
-      maas-bridge.yaml        HTTPRoute + AuthPolicy (MaaS Gateway -> wg-ai-gateway)
-      external-model-registry.yaml  ConfigMap listing external models for MaaS API
-      httpbin-echo.yaml       httpbin.org backend for header echo testing
-      key-validating-simulator.yaml  provider-sim with API key validation
-      key-validating-backend.yaml    XBackendDestination + HTTPRoute for key-validating-sim
-  demos/
-    mixed-providers/          Multi-provider demo (OpenAI + Anthropic + vLLM + local)
-      README.md               Demo deployment + validation (5 steps)
-      manifests/              Per-provider simulators, backends, routes, auth policies
-  patches/
-    README.md                 Patch description
-    maas-api-external-models.patch  MaaS API patch for ConfigMap-based model discovery
-```
