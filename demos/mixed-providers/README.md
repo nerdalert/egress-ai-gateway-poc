@@ -17,15 +17,17 @@ authenticates once with a MaaS SA token and accesses all providers.
 - [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) repo cloned (for CRDs)
 
 **Forked images** (used until upstream PRs merge):
-- Controller: `ghcr.io/nerdalert/wg-ai-gateway:latest` — includes
+- Controller: `ghcr.io/nerdalert/wg-ai-gateway:prefix-rewrite-fix` — includes
   [prefix rewrite fix](https://github.com/kubernetes-sigs/wg-ai-gateway/pull/38)
 - MaaS API: `ghcr.io/nerdalert/maas-api:external-models` — adds
   ConfigMap-based external model discovery
 
 ```bash
-# Adjust these to match your clone locations
-export WG_DIR=<path-to>/wg-ai-gateway/prototypes/backend-control-plane
-export POC_DIR=<path-to>/egress-ai-gateway-poc
+git clone https://github.com/kubernetes-sigs/wg-ai-gateway.git
+git clone https://github.com/nerdalert/egress-ai-gateway-poc.git
+
+export WG_DIR=wg-ai-gateway/prototypes/backend-control-plane
+export POC_DIR=egress-ai-gateway-poc
 ```
 
 ---
@@ -40,12 +42,19 @@ Envoy xDS config), and creates a Gateway resource (triggers Envoy proxy
 pod + LoadBalancer service deployment).
 
 ```bash
-kubectl apply -f $WG_DIR/../internal/backend/k8s/crds/
+kubectl apply -f $WG_DIR/backend/k8s/crds/
 kubectl apply -f $POC_DIR/manifests/openshift/controller.yaml
 kubectl wait --for=condition=available deployment/ai-gateway-controller \
   -n ai-gateway-system --timeout=120s
 kubectl apply -f $POC_DIR/manifests/common/gateway.yaml
 ```
+
+> **ROSA/clusterbot clusters:** If the Envoy proxy pod stays `Pending` with
+> `Insufficient cpu`, lower its CPU request:
+> ```bash
+> kubectl patch deployment envoy-poc-gateway -n default --type='json' \
+>   -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"10m"}]'
+> ```
 
 ### Step 2: Deploy the local on-prem model
 

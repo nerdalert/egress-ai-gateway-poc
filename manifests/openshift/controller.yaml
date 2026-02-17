@@ -100,7 +100,7 @@ spec:
       serviceAccountName: ai-gateway-controller
       containers:
       - name: manager
-        image: ghcr.io/nerdalert/wg-ai-gateway:latest
+        image: ghcr.io/nerdalert/wg-ai-gateway:prefix-rewrite-fix
         imagePullPolicy: Always
         args:
         - --envoy-image=docker.io/envoyproxy/envoy:v1.37-latest
