@@ -152,27 +152,97 @@ done
 ### Example Output
 
 **Model listing** (step 3) - all three providers in a single response:
-```json
+
+```shell
+curl -sSk -H "Authorization: Bearer $TOKEN" "https://${HOST}/v1/models" | jq
 {
   "data": [
-    { "id": "facebook/opt-125m", "object": "model", "owned_by": "vllm", "ready": true },
-    { "id": "gpt-4", "object": "model", "owned_by": "openai", "ready": true },
-    { "id": "claude-3-sonnet", "object": "model", "owned_by": "anthropic", "ready": true }
+    {
+      "id": "facebook/opt-125m",
+      "created": 1771301116,
+      "object": "model",
+      "owned_by": "vllm",
+      "url": "http://maas.apps.ci-ln-xbmcth2-76ef8.aws-2.ci.openshift.org/llm/facebook-opt-125m-simulated",
+      "ready": true
+    },
+    {
+      "id": "gpt-4",
+      "created": 1771301116,
+      "object": "model",
+      "owned_by": "openai",
+      "ready": true
+    },
+    {
+      "id": "claude-3-sonnet",
+      "created": 1771301116,
+      "object": "model",
+      "owned_by": "anthropic",
+      "ready": true
+    }
   ],
   "object": "list"
 }
 ```
 
-Note: `facebook/opt-125m` is auto-discovered by MaaS via KServe. The external
-models come from the `external-model-registry` ConfigMap.
+**OAI simulator inference** (step 4):
+
+```shell
+$ curl -sSk -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello from OpenAI"}],"max_tokens":10}' \
+  "https://${HOST}/external/openai/v1/chat/completions" | jq
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "The API key was validated successfully. This is a simulated response.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1771301210,
+  "id": "chatcmpl-1771301210831536425",
+  "model": "gpt-4",
+  "object": "chat.completion",
+  "usage": {
+    "completion_tokens": 23,
+    "prompt_tokens": 2,
+    "total_tokens": 25
+  }
+}
+```
+
+Note: `facebook/opt-125m` is auto-discovered by MaaS via KServe. The external models come from the `external-model-registry` ConfigMap.
 
 **On-prem inference** (step 6):
-```json
+```shell
+$ curl -sSk -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"facebook/opt-125m","messages":[{"role":"user","content":"Hello from on-prem"}],"max_tokens":10}' \
+  "https://${HOST}/llm/facebook-opt-125m-simulated/v1/chat/completions" | jq
 {
-  "id": "chatcmpl-7a6b79ac-3373-5a2a-a80e-dbedee28a5dc",
+  "id": "chatcmpl-05bbc6c5-a28b-54d7-9958-86f8ac62b6c6",
+  "created": 1771301329,
   "model": "facebook/opt-125m",
-  "choices": [{ "message": { "role": "assistant", "content": "I am your AI assistant, how can I help you today?" }}],
-  "usage": { "prompt_tokens": 0, "completion_tokens": 26, "total_tokens": 26 }
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 5,
+    "total_tokens": 10
+  },
+  "object": "chat.completion",
+  "kv_transfer_params": null,
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "Testing@, #testing "
+      }
+    }
+  ]
 }
 ```
 
