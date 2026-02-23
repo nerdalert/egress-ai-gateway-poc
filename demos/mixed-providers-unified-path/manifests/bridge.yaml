@@ -1,0 +1,72 @@
+# Single-endpoint bridge: one external URL for all providers.
+#
+# Kuadrant AuthPolicy validates the MaaS SA token. MaaS default
+# TokenRateLimitPolicy on the gateway remains in effect for this route.
+# Traffic is then sent to wg-ai-gateway Envoy. Provider selection and provider
+# key injection are handled by Lua filter + header-based routes.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: unified-inference
+  namespace: default
+spec:
+  parentRefs:
+  - name: maas-default-gateway
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/v1/chat/completions"
+    backendRefs:
+    - name: envoy-poc-gateway
+      port: 80
+---
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: unified-inference-auth
+  namespace: default
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: unified-inference
+  rules:
+    authentication:
+      service-accounts:
+        kubernetesTokenReview:
+          audiences:
+          - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    metadata:
+      matchedTier:
+        cache:
+          key:
+            selector: auth.identity.user.username
+          ttl: 300
+        http:
+          body:
+            expression: '{ "groups": auth.identity.user.groups }'
+          contentType: application/json
+          method: POST
+          url: https://maas-api.opendatahub.svc.cluster.local:8443/v1/tiers/lookup
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                tier:
+                  expression: |
+                    auth.metadata.matchedTier["tier"]

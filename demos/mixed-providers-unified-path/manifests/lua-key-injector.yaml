@@ -1,0 +1,80 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: model-key-injector
+  namespace: openshift-ingress
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: maas-default-gateway
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+          inline_code: |
+            local MODEL_KEYS = {
+              ["gpt-4"] = "Bearer sk-openai-key-for-demo",
+              ["claude-3-sonnet"] = "Bearer sk-ant-claude-key-for-demo",
+              ["Qwen/Qwen3-0.6B"] = "Bearer change-me-super-secret",
+            }
+            local MODEL_PROVIDERS = {
+              ["gpt-4"] = "openai",
+              ["claude-3-sonnet"] = "anthropic",
+              ["Qwen/Qwen3-0.6B"] = "vllm",
+            }
+
+            local function is_chat_path(path)
+              return path and string.match(path, "^/v1/chat/completions") ~= nil
+            end
+
+            function envoy_on_request(request_handle)
+              local path = request_handle:headers():get(":path")
+              if not is_chat_path(path) then
+                return
+              end
+
+              local body = request_handle:body()
+              if body == nil then
+                request_handle:respond(
+                  {[":status"] = "400", ["content-type"] = "application/json"},
+                  '{"error":"missing request body"}'
+                )
+                return
+              end
+
+              local raw = body:getBytes(0, body:length())
+              local model = string.match(raw, '"model"%s*:%s*"([^"]+)"')
+
+              if not model then
+                request_handle:respond(
+                  {[":status"] = "400", ["content-type"] = "application/json"},
+                  '{"error":"missing model in request body"}'
+                )
+                return
+              end
+
+              local provider_key = MODEL_KEYS[model]
+              local provider = MODEL_PROVIDERS[model]
+              if not provider_key or not provider then
+                request_handle:respond(
+                  {[":status"] = "400", ["content-type"] = "application/json"},
+                  '{"error":"unsupported model: ' .. model .. '"}'
+                )
+                return
+              end
+
+              request_handle:headers():replace("authorization", provider_key)
+              request_handle:headers():replace("x-target-provider", provider)
+            end

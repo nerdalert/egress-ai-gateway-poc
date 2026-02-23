@@ -1,0 +1,43 @@
+apiVersion: kuadrant.io/v1
+kind: RateLimitPolicy
+metadata:
+  name: gateway-request-rate-limits
+  namespace: openshift-ingress
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: maas-default-gateway
+  limits:
+    gpt4-requests-per-user:
+      rates:
+      - limit: 5
+        window: 1m
+      counters:
+      - expression: auth.identity.user.username
+      when:
+      - predicate: requestBodyJSON('/model') == "gpt-4"
+    claude-requests-per-user:
+      rates:
+      - limit: 5
+        window: 1m
+      counters:
+      - expression: auth.identity.user.username
+      when:
+      - predicate: requestBodyJSON('/model') == "claude-3-sonnet"
+    qwen-requests-per-user:
+      rates:
+      - limit: 5
+        window: 1m
+      counters:
+      - expression: auth.identity.user.username
+      when:
+      - predicate: requestBodyJSON('/model') == "Qwen/Qwen3-0.6B"
+    facebook-opt-requests-per-user:
+      rates:
+      - limit: 5
+        window: 1m
+      counters:
+      - expression: auth.identity.user.username
+      when:
+      - predicate: requestBodyJSON('/model') == "facebook/opt-125m"

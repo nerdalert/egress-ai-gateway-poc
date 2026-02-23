@@ -1,0 +1,43 @@
+# XBackendDestination resources for provider backends used by header-based routes.
+---
+apiVersion: ainetworking.prototype.x-k8s.io/v0alpha0
+kind: XBackendDestination
+metadata:
+  name: openai-backend
+  namespace: default
+spec:
+  destination:
+    type: Fqdn
+    fqdn:
+      hostname: openai-simulator.external-models.svc.cluster.local
+    ports:
+    - number: 8000
+      protocol: HTTP
+---
+apiVersion: ainetworking.prototype.x-k8s.io/v0alpha0
+kind: XBackendDestination
+metadata:
+  name: anthropic-backend
+  namespace: default
+spec:
+  destination:
+    type: Fqdn
+    fqdn:
+      hostname: anthropic-simulator.external-models.svc.cluster.local
+    ports:
+    - number: 8000
+      protocol: HTTP
+---
+apiVersion: ainetworking.prototype.x-k8s.io/v0alpha0
+kind: XBackendDestination
+metadata:
+  name: vllm-backend
+  namespace: default
+spec:
+  destination:
+    type: Fqdn
+    fqdn:
+      hostname: ec2-34-202-9-189.compute-1.amazonaws.com
+    ports:
+    - number: 8000
+      protocol: HTTP

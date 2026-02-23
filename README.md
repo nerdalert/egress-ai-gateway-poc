@@ -1,14 +1,60 @@
-# Egress AI Gateway POC: WG AI Gateway with External Model Routing on OpenShift
+# Egress AI Gateway POC
 
-Proof of concept integrating the Kubernetes SIG WG AI Gateway with Red Hat
-OpenShift AI Models-as-a-Service (MaaS) to route inference requests to
-external model endpoints alongside on-prem KServe/vLLM models.
+Integrates MaaS (Models-as-a-Service) with the [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) project to route inference requests to multiple external AI providers behind a single MaaS gateway, with Kuadrant policy enforcement (auth, per-model rate limiting, token budgets).
 
-**[Demo: On-Prem + Simulated Providers + External vLLM](demos/mixed-providers/)** -
-Four providers behind a single gateway with per-provider API key injection,
-unified model listing, and token rate limiting.
+## Demos
+
+| Demo | Endpoint Pattern | Description |
+|------|-----------------|-------------|
+| [mixed-providers](demos/mixed-providers/) | `/external/<provider>/v1/chat/completions` | Per-provider URL paths. Each provider has its own HTTPRoute and AuthPolicy. Authorino injects API keys via `response.success.headers`. |
+| [mixed-providers-unified-path](demos/mixed-providers-unified-path/) | `/v1/chat/completions` | Single endpoint for all external providers. Model field in request body determines provider. Envoy Lua filter handles key injection and routing header. |
+
+The unified-path demo exists because pure Kuadrant AuthPolicy cannot perform body-based key injection due to the wasm-shim timing constraint described below.
+
+## Components
+
+- **MaaS Gateway:** `openshift-ingress/maas-default-gateway` (Istio)
+- **Kuadrant:** Authorino (auth) + Limitador (rate limiting) in `kuadrant-system`
+- **wg-ai-gateway:** Controller in `ai-gateway-system`, Envoy proxy `envoy-poc-gateway` in `default`
+- **Provider backends:** `XBackendDestination` CRDs pointing to simulators and remote vLLM
+
+## Kuadrant Wasm-Shim Body Access Limitation
+
+A single `/v1/chat/completions` endpoint requires reading the `model` field from the request body to determine which provider API key to inject. Kuadrant's wasm-shim cannot do this for auth decisions because of how Envoy processes HTTP requests in phases:
+
+1. **Client sends the request.** Headers arrive first, body arrives separately after.
+
+2. **`on_http_request_headers()` fires.** Envoy calls the wasm-shim as soon as headers arrive. The wasm-shim sees an AuthPolicy on this route and immediately makes a gRPC call to Authorino, sending method, path, and headers. The body has not arrived from the client yet, so it is not included.
+
+3. **Authorino validates the token but cannot see the body.** It receives the gRPC call, validates the bearer token from the `Authorization` header, and returns "authorized." The field `input.request.body` is an empty string. Any OPA policy attempting `json.unmarshal("")` on the body fails. Authorino cannot determine the model and cannot inject a model-specific API key.
+
+4. **`on_http_request_body()` fires.** The body is now available. The wasm-shim evaluates rate-limit actions in this phase. `requestBodyJSON('/model')` parses the body and extracts the model name. Per-model rate-limit predicates work because they run here.
+
+5. **The request continues upstream.** The `Authorization` header still contains whatever Authorino set in step 3, which could not be model-specific because Authorino did not know the model.
+
+The gap is between steps 2 and 4. The wasm-shim calls Authorino at step 2 but does not have the body until step 4. Rate limiting works because it evaluates at step 4. Auth key injection does not work because it evaluates at step 2.
+
+### What works in Kuadrant today
+
+- **Auth token validation** on a unified endpoint (does not need the body)
+- **Per-model rate limiting** via `requestBodyJSON('/model')` in `RateLimitPolicy` predicates (runs in the body phase)
+- **OPA Rego** in AuthPolicy compiles and enforces correctly (syntax: `allow { true }`, avoid hyphens in evaluator names)
+- **CEL ternary expressions** in `response.success.headers` for conditional header injection
+
+### What does not work
+
+- **Body-based key injection via AuthPolicy** — `input.request.body` is empty when Authorino is called via the wasm-shim
+- **EnvoyFilter `with_request_body`** only affects native Envoy ext_authz filters, not the wasm-shim's gRPC call
+
+### Resolution
+
+The `mixed-providers-unified-path` demo works around this by adding an Envoy Lua filter that runs after the wasm-shim (in the body phase). The Lua filter reads the model from the body, sets the `Authorization` header with the correct provider key, and sets an `X-Target-Provider` header for downstream routing. Auth and rate limiting remain in Kuadrant.
+
+A wasm-shim change to delay the auth call until after body buffering (or to support body-aware header injection via `requestBodyJSON()`) would eliminate the need for the Lua filter.
 
 ## What This Proves
+
+### Path-based demo (`mixed-providers`)
 
 - wg-ai-gateway controller runs on OpenShift alongside MaaS
 - `XBackendDestination` (FQDN type) routes traffic to external model endpoints
@@ -16,76 +62,24 @@ unified model listing, and token rate limiting.
 - Per-provider API key injection via Kuadrant AuthPolicy `response.success.headers`
 - MaaS SA token auth is enforced on all external provider routes
 - MaaS API `/v1/models` returns both local and external models in a unified listing
-- TokenRateLimitPolicy enforces per-tier token budgets on external models
+- `TokenRateLimitPolicy` enforces per-tier token budgets on external models
 - URL rewriting ensures backends receive clean `/v1/*` paths matching real provider APIs
-- The external backend is FQDN-based -- simulators can be replaced by any
-  resolvable hostname (external host, VM, or real provider once TLS is implemented)
+- The external backend is FQDN-based — simulators can be replaced by any resolvable hostname (external host, VM, or real provider once TLS is implemented)
 
-## Architecture
+### Unified endpoint demo (`mixed-providers-unified-path`)
 
-External model requests traverse two gateways. On-prem requests go directly
-through the MaaS Gateway to KServe (single gateway).
+All of the above, plus:
 
-```
-Client (single MaaS SA token)
-  |
-  v
-MaaS Gateway (maas.$CLUSTER_DOMAIN, Istio-based)
-  |
-  |-- /v1/models              -> MaaS API (unified listing: local + external)
-  |-- /maas-api/*              -> MaaS API (tokens, tiers, api-keys)
-  |
-  |-- /external/openai/*       -> Authorino validates token + injects OpenAI API key
-  |     URL rewrite: /external/openai/* -> /openai/*
-  |     -> wg-ai-gateway Envoy
-  |          URL rewrite: /openai/* -> /*
-  |          -> openai-simulator (or api.openai.com once TLS supported)
-  |
-  |-- /external/anthropic/*   -> Authorino validates token + injects Anthropic API key
-  |     URL rewrite: /external/anthropic/* -> /anthropic/*
-  |     -> wg-ai-gateway Envoy
-  |          URL rewrite: /anthropic/* -> /*
-  |          -> anthropic-simulator (or api.anthropic.com once TLS supported)
-  |
-  |-- /external/vllm/*       -> Authorino validates token + overrides Authorization header
-  |     URL rewrite: /external/vllm/* -> /vllm/*
-  |     -> wg-ai-gateway Envoy
-  |          URL rewrite: /vllm/* -> /*
-  |          -> remote vLLM instance (HTTP, real GPU inference)
-  |
-  |-- /llm/<model>/*          -> KServe LLMInferenceService (on-prem, single gateway)
-```
+- Single `/v1/chat/completions` endpoint for all external providers — no per-provider URL paths
+- Model field in the request body (`{"model":"gpt-4"}`) determines the provider, not the URL
+- Envoy Lua filter performs body-based model dispatch and per-provider API key injection at the gateway layer
+- Per-model rate limiting via Kuadrant `RateLimitPolicy` with `requestBodyJSON('/model')` predicates — independent buckets per model
+- Clients never change URLs when models move between providers — only the gateway configuration changes
+- Demonstrates the wasm-shim body access limitation and a working Lua-based workaround
 
-## Prerequisites
+## Documentation
 
-- OpenShift cluster with MaaS deployed (`deploy-rhoai-stable.sh`)
-- `kubectl`/`oc` with cluster-admin access
-- [wg-ai-gateway](https://github.com/kubernetes-sigs/wg-ai-gateway) repo cloned (for CRDs)
+Install, architecture, and validation steps are maintained in each demo directory:
 
-**Forked images** (used until upstream PRs merge):
-- Controller: `ghcr.io/nerdalert/wg-ai-gateway:prefix-rewrite-fix` — includes
-  [prefix rewrite fix](https://github.com/kubernetes-sigs/wg-ai-gateway/pull/38)
-- MaaS API: `ghcr.io/nerdalert/maas-api:external-models` — adds
-  ConfigMap-based external model discovery
-
-## What Works
-
-| Capability | Status |
-|-----------|--------|
-| wg-ai-gateway controller on OpenShift | Working |
-| FQDN backend routing to external model simulators | Working |
-| Per-provider API key injection | Working (Authorino `response.success.headers`) |
-| Multi-provider routing (OpenAI + Anthropic + vLLM + on-prem) | Working |
-| MaaS SA token auth on external routes | Working |
-| Unified model listing (local + external) | Working |
-| TokenRateLimitPolicy on external models | Working (free: 100 tokens/min) |
-| URL rewriting (clean `/v1/*` paths to backends) | Working |
-
-## What's Next
-
-| Item | Status |
-|------|--------|
-| TLS origination | Needs upstream wg-ai-gateway translator work |
-| Dynamic key lookup from Postgres | Needs MaaS API `/v1/provider-keys` endpoint |
-| Body-based routing | Route by model name in JSON body |
-| Real provider endpoints | Requires TLS origination |
+- `demos/mixed-providers/README.md`
+- `demos/mixed-providers-unified-path/README.md`
