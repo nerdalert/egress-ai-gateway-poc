@@ -1,0 +1,36 @@
+# HTTPRoute Template: Generate the final HTTPRoute with your API key
+#
+# Usage:
+#   sed "s/{{OPENAI_API_KEY}}/$OPENAI_API_KEY/g" \
+#     httproute-openai.template > httproute-openai.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openai-route
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "2"
+    provider: openai
+spec:
+  parentRefs:
+    - name: external-model-gateway
+      namespace: external-model-demo
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/
+      backendRefs:
+        - name: openai-external
+          port: 443
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: Host
+                value: "api.openai.com"
+              - name: Authorization
+                value: "Bearer {{OPENAI_API_KEY}}"
+      timeouts:
+        request: 300s

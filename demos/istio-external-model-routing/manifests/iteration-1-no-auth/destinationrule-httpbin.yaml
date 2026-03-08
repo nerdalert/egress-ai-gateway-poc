@@ -1,0 +1,18 @@
+# DestinationRule: TLS origination for httpbin.org
+#
+# Configures Istio to originate TLS when connecting to httpbin.org.
+# mode: SIMPLE = standard TLS (not mTLS). Istio derives SNI automatically
+# from the host field.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: httpbin-tls
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "1"
+spec:
+  host: httpbin.org
+  trafficPolicy:
+    tls:
+      mode: SIMPLE

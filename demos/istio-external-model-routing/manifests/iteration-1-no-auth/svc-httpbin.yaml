@@ -1,0 +1,19 @@
+# ExternalName Service: DNS bridge for HTTPRoute -> httpbin.org
+#
+# Creates an in-cluster DNS alias so the HTTPRoute backendRef can
+# reference a standard Kubernetes Service. The actual external hostname
+# resolution is handled by the ServiceEntry + DestinationRule.
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-external
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "1"
+spec:
+  type: ExternalName
+  externalName: httpbin.org
+  ports:
+    - port: 443
+      targetPort: 443

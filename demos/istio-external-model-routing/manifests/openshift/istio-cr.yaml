@@ -1,0 +1,18 @@
+# Istio CR: Deploys the Istio control plane via the Sail Operator
+# REGISTRY_ONLY mode ensures only ServiceEntry-registered hosts are reachable.
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  version: v1.29-latest
+  namespace: istio-system
+  values:
+    pilot:
+      env:
+        PILOT_ENABLE_ALPHA_GATEWAY_API: "true"
+    meshConfig:
+      outboundTrafficPolicy:
+        mode: REGISTRY_ONLY
+      accessLogFile: /dev/stdout

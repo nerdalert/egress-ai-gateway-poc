@@ -1,0 +1,3 @@
+istio-1.29.0/
+istio-*/
+manifests/iteration-2-with-apikey/httproute-openai.yaml

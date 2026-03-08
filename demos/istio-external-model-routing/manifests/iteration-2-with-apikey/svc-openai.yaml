@@ -1,0 +1,19 @@
+# ExternalName Service: DNS bridge for HTTPRoute -> api.openai.com
+#
+# Creates an in-cluster DNS alias so the HTTPRoute backendRef can
+# reference a standard Kubernetes Service that maps to api.openai.com.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-external
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "2"
+    provider: openai
+spec:
+  type: ExternalName
+  externalName: api.openai.com
+  ports:
+    - port: 443
+      targetPort: 443

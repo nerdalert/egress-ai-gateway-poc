@@ -1,0 +1,35 @@
+# Istio Gateway using Kubernetes Gateway API
+# This gateway serves as the ingress point for all external model routing.
+# Istio 1.29.1 provides full Gateway API v1 support.
+#
+# The gateway listens on port 80 (HTTP). TLS origination to external
+# endpoints is handled by DestinationRule, not at the gateway level.
+# This keeps the gateway simple and separates concerns:
+#   - Gateway: ingress + listener config
+#   - HTTPRoute: routing rules
+#   - ServiceEntry: external host registration
+#   - DestinationRule: TLS origination + connection policy
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-model-demo
+  labels:
+    istio-injection: enabled
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: external-model-gateway
+  namespace: external-model-demo
+  annotations:
+    # Istio-specific: use the istio gateway controller
+    networking.istio.io/service-type: LoadBalancer
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

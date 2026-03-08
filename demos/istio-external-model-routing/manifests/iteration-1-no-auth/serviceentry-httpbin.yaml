@@ -1,0 +1,22 @@
+# ServiceEntry: Register httpbin.org in the Istio mesh service registry
+#
+# Without this (when outboundTrafficPolicy.mode=REGISTRY_ONLY), Istio
+# blocks all traffic to httpbin.org. This tells Istio that httpbin.org
+# is a valid external destination reachable via DNS on port 443 (HTTPS).
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: httpbin-external
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "1"
+spec:
+  hosts:
+    - httpbin.org
+  location: MESH_EXTERNAL
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+  resolution: DNS

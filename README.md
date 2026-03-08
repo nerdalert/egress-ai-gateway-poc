@@ -8,6 +8,7 @@ Integrates MaaS (Models-as-a-Service) with the [wg-ai-gateway](https://github.co
 |------|-----------------|-------------|
 | [mixed-providers](demos/mixed-providers/) | `/external/<provider>/v1/chat/completions` | Per-provider URL paths. Each provider has its own HTTPRoute and AuthPolicy. Authorino injects API keys via `response.success.headers`. |
 | [mixed-providers-unified-path](demos/mixed-providers-unified-path/) | `/v1/chat/completions` | Single endpoint for all external providers. Model field in request body determines provider. Envoy Lua filter handles key injection and routing header. |
+| [istio-external-model-routing](demos/istio-external-model-routing/) | `/v1/chat/completions` | Routes to external AI models using native Istio resources (ServiceEntry, DestinationRule) and Gateway API HTTPRoute with API key injection via RequestHeaderModifier — no custom controllers or CRDs required. |
 
 The unified-path demo exists because pure Kuadrant AuthPolicy cannot perform body-based key injection due to the wasm-shim timing constraint described below.
 

@@ -1,0 +1,14 @@
+# Sail Operator Subscription for OpenShift
+# Installs the Sail Operator which manages Istio lifecycle on OpenShift.
+# Channel "stable-1.29" provides Istio 1.29.x releases.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: sailoperator
+  namespace: openshift-operators
+spec:
+  channel: "stable-1.29"
+  installPlanApproval: Automatic
+  name: sailoperator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
