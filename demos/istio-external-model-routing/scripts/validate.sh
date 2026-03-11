@@ -138,6 +138,34 @@ validate_iteration_2() {
         }' | jq .
 }
 
+# --- Iteration 3: api.anthropic.com ---
+validate_iteration_3() {
+    echo ""
+    echo "=========================================="
+    echo "  Iteration 3: api.anthropic.com (with API key)"
+    echo "=========================================="
+    echo ""
+    echo "NOTE: The client does NOT send an x-api-key header."
+    echo "      The gateway injects it via HTTPRoute RequestHeaderModifier."
+    echo "      Anthropic also requires an anthropic-version header (also injected)."
+
+    echo ""
+    echo "Resources:"
+    kubectl get serviceentry,destinationrule,httproute,svc -n "${NAMESPACE}" 2>/dev/null | grep -E "NAME|anthropic"
+
+    echo ""
+    echo "--- POST /v1/messages ---"
+    echo "curl -s ${GATEWAY_URL}/v1/messages -H 'Content-Type: application/json' -d '{\"model\": \"claude-sonnet-4-20250514\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in one word.\"}], \"max_tokens\": 5}'"
+    echo ""
+    curl -s --max-time 30 "${GATEWAY_URL}/v1/messages" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": "Say hello in one word."}],
+            "max_tokens": 5
+        }' | jq .
+}
+
 # --- Main ---
 case "${1:-}" in
     iteration-1|1)
@@ -148,13 +176,18 @@ case "${1:-}" in
         discover_gateway
         validate_iteration_2
         ;;
+    iteration-3|3)
+        discover_gateway
+        validate_iteration_3
+        ;;
     all)
         discover_gateway
         validate_iteration_1
         validate_iteration_2
+        validate_iteration_3
         ;;
     *)
-        echo "Usage: $0 {iteration-1|iteration-2|all}"
+        echo "Usage: $0 {iteration-1|iteration-2|iteration-3|all}"
         echo ""
         echo "Discovers the gateway address automatically."
         echo "Override with: GATEWAY_URL=http://host:port $0 all"
@@ -172,8 +205,10 @@ echo ""
 echo "  # httpbin.org (iteration 1)"
 echo "  curl -s ${GATEWAY_URL}/get -H 'Host: ai-gateway.example.com' | jq ."
 echo "  curl -s ${GATEWAY_URL}/post -H 'Host: ai-gateway.example.com' -H 'Content-Type: application/json' -d '{\"test\": \"hello\"}' | jq ."
-echo "  curl -s ${GATEWAY_URL}/headers -H 'Host: ai-gateway.example.com' | jq ."
 echo ""
 echo "  # api.openai.com (iteration 2 — no Authorization header needed)"
 echo "  curl -s ${GATEWAY_URL}/v1/models | jq '.data[:3]'"
 echo "  curl -s ${GATEWAY_URL}/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in one word.\"}], \"max_tokens\": 5}' | jq ."
+echo ""
+echo "  # api.anthropic.com (iteration 3 — no x-api-key header needed)"
+echo "  curl -s ${GATEWAY_URL}/v1/messages -H 'Content-Type: application/json' -d '{\"model\": \"claude-sonnet-4-20250514\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in one word.\"}], \"max_tokens\": 5}' | jq ."

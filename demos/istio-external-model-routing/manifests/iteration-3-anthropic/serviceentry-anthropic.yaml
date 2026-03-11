@@ -1,0 +1,19 @@
+# ServiceEntry: Register api.anthropic.com in the Istio mesh service registry
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: anthropic-api
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "3"
+    provider: anthropic
+spec:
+  hosts:
+    - api.anthropic.com
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+  resolution: DNS
+  location: MESH_EXTERNAL

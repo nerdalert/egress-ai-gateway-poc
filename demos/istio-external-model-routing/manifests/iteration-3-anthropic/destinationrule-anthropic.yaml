@@ -1,0 +1,15 @@
+# DestinationRule: TLS origination for api.anthropic.com
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: anthropic-tls
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "3"
+    provider: anthropic
+spec:
+  host: api.anthropic.com
+  trafficPolicy:
+    tls:
+      mode: SIMPLE

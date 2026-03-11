@@ -1,0 +1,43 @@
+# HTTPRoute Template: Generate the final HTTPRoute with your Anthropic API key
+#
+# Usage:
+#   sed "s|{{ANTHROPIC_API_KEY}}|$ANTHROPIC_API_KEY|g" \
+#     httproute-anthropic.template > httproute-anthropic.yaml
+#
+# Differences from OpenAI:
+#   - Auth header: x-api-key (not Authorization: Bearer)
+#   - Extra header: anthropic-version (required by Anthropic API)
+#   - Endpoint: /v1/messages (not /v1/chat/completions)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: anthropic-route
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "3"
+    provider: anthropic
+spec:
+  parentRefs:
+    - name: external-model-gateway
+      namespace: external-model-demo
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/messages
+      backendRefs:
+        - name: anthropic-external
+          port: 443
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: Host
+                value: "api.anthropic.com"
+              - name: x-api-key
+                value: "{{ANTHROPIC_API_KEY}}"
+              - name: anthropic-version
+                value: "2023-06-01"
+      timeouts:
+        request: 300s

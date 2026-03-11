@@ -56,6 +56,7 @@ install_istio_kubernetes() {
     ${ISTIOCTL} install \
         --set profile=minimal \
         --set values.pilot.env.PILOT_ENABLE_ALPHA_GATEWAY_API=true \
+        --set values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true \
         --set meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY \
         --set meshConfig.accessLogFile=/dev/stdout \
         -y

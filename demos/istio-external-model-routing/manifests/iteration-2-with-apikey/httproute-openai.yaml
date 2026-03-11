@@ -1,14 +1,7 @@
 # HTTPRoute: Route /v1/* requests to api.openai.com via ExternalName Service
 #
-# The RequestHeaderModifier injects:
-#   - Host: api.openai.com (correct virtual host for the external endpoint)
-#   - Authorization: Bearer <key> (API key for OpenAI)
-#
 # To use with a real key, generate from the template:
 #   sed "s|{{OPENAI_API_KEY}}|$OPENAI_API_KEY|g" httproute-openai.template > httproute-openai.yaml
-#
-# In production, AuthPolicy + Authorino replaces the RequestHeaderModifier
-# and reads the key from a Kubernetes Secret.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

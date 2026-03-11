@@ -1,0 +1,16 @@
+# ExternalName Service: DNS bridge for HTTPRoute -> api.anthropic.com
+apiVersion: v1
+kind: Service
+metadata:
+  name: anthropic-external
+  namespace: external-model-demo
+  labels:
+    app: external-model-routing
+    iteration: "3"
+    provider: anthropic
+spec:
+  type: ExternalName
+  externalName: api.anthropic.com
+  ports:
+    - port: 443
+      targetPort: 443
