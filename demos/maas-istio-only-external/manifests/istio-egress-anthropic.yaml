@@ -1,0 +1,39 @@
+# Istio egress resources for api.anthropic.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anthropic-external
+  namespace: openshift-ingress
+spec:
+  type: ExternalName
+  externalName: api.anthropic.com
+  ports:
+    - port: 443
+      targetPort: 443
+---
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: anthropic-api
+  namespace: openshift-ingress
+spec:
+  hosts:
+    - api.anthropic.com
+  ports:
+    - number: 443
+      name: https
+      protocol: HTTPS
+  resolution: DNS
+  location: MESH_EXTERNAL
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: anthropic-tls
+  namespace: openshift-ingress
+spec:
+  host: api.anthropic.com
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
