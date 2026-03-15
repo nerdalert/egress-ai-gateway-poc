@@ -2,11 +2,6 @@
 #
 # Generate with:
 #   sed "s|{{ANTHROPIC_API_KEY}}|$ANTHROPIC_API_KEY|g" anthropic-bridge.template > anthropic-bridge.yaml
-#
-# Anthropic differences from OpenAI:
-#   - Auth header: x-api-key (not Authorization: Bearer)
-#   - Extra header: anthropic-version (required)
-#   - Endpoint: /v1/messages (not /v1/chat/completions)
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -53,6 +48,10 @@ spec:
     name: anthropic-bridge
   rules:
     authentication:
+      api-keys:
+        plain:
+          selector: request.headers.authorization
+        priority: 0
       service-accounts:
         kubernetesTokenReview:
           audiences:
@@ -61,10 +60,35 @@ spec:
           userid:
             expression: |
               auth.identity.user.username.split(":")[3]
-        cache:
-          key:
-            selector: context.request.http.headers.authorization.@case:lower
-          ttl: 600
+        priority: 1
+    metadata:
+      apiKeyValidation:
+        http:
+          body:
+            expression: '{"key": request.headers.authorization.replace("Bearer ", "")}'
+          contentType: application/json
+          method: POST
+          url: https://maas-api.opendatahub.svc.cluster.local:8443/internal/v1/api-keys/validate
+        priority: 0
+    authorization:
+      api-key-valid:
+        patternMatching:
+          patterns:
+            - operator: eq
+              selector: auth.metadata.apiKeyValidation.valid
+              value: "true"
+        priority: 0
+        when:
+          - predicate: request.headers.authorization.startsWith("Bearer sk-oai-")
+      sa-token-allowed:
+        patternMatching:
+          patterns:
+            - operator: neq
+              selector: auth.identity.user.username
+              value: ""
+        priority: 0
+        when:
+          - predicate: '!request.headers.authorization.startsWith("Bearer sk-oai-")'
     response:
       success:
         headers:
