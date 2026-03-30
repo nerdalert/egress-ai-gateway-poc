@@ -1,0 +1,19 @@
+# ServiceEntry to make the BBR gRPC service visible to the gateway's Envoy proxy.
+# Without this, the ext-proc cluster_name has no backing cluster and gRPC calls
+# silently fail (failure_mode_allow passes the request through unchanged).
+#
+# Adapt the host to match your BBR service name and namespace.
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: bbr-plugins
+  namespace: openshift-ingress
+spec:
+  hosts:
+  - payload-processing.bbr-system.svc.cluster.local
+  location: MESH_INTERNAL
+  resolution: DNS
+  ports:
+  - number: 9004
+    name: grpc
+    protocol: GRPC

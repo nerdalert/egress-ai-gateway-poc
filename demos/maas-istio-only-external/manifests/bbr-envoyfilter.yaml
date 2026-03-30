@@ -1,0 +1,102 @@
+# Per-route EnvoyFilter for BBR ext-proc.
+#
+# The ext-proc filter is disabled by default (all modes SKIP/NONE) and enabled
+# per-route on external model routes only. This prevents the body-field-to-header
+# plugin from breaking non-inference traffic (API key minting, health checks, etc).
+#
+# Uses FULL_DUPLEX_STREAMED body mode to match BBR's --streaming=true flag.
+# If BBR runs with --streaming=false, change to BUFFERED.
+#
+# Add HTTP_ROUTE patches for each external model. Route names follow the pattern:
+#   <namespace>.<httproute-name>.<rule-index>
+#
+# To discover route names:
+#   POD=$(kubectl get pod -n openshift-ingress \
+#     -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+#     -o jsonpath='{.items[0].metadata.name}')
+#   kubectl exec -n openshift-ingress "$POD" -c istio-proxy -- \
+#     pilot-agent request GET config_dump | python3 -c "
+#       import sys,json; data=json.load(sys.stdin)
+#       for c in data['configs']:
+#         for rc in c.get('dynamic_route_configs',[]):
+#           for vh in rc.get('route_config',{}).get('virtual_hosts',[]):
+#             for r in vh.get('routes',[]):
+#               if 'model' in r.get('name',''):
+#                 print(r['name'], json.dumps(r['match'])[:80])"
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: bbr-ext-proc
+  namespace: openshift-ingress
+spec:
+  configPatches:
+  # Install ext-proc filter, disabled by default
+  - applyTo: HTTP_FILTER
+    match:
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.ext_proc
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+          failure_mode_allow: true
+          allow_mode_override: true
+          grpc_service:
+            envoy_grpc:
+              cluster_name: outbound|9004||payload-processing.bbr-system.svc.cluster.local
+            timeout: 10s
+          processing_mode:
+            request_header_mode: SKIP
+            response_header_mode: SKIP
+            request_body_mode: NONE
+            response_body_mode: NONE
+  # Enable on gpt-4o path rule
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        vhost:
+          route:
+            name: "llm.maas-model-gpt-4o.0"
+    patch:
+      operation: MERGE
+      value:
+        typed_per_filter_config:
+          envoy.filters.http.ext_proc:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+            overrides:
+              processing_mode:
+                request_header_mode: SEND
+                response_header_mode: SEND
+                request_body_mode: FULL_DUPLEX_STREAMED
+                response_body_mode: FULL_DUPLEX_STREAMED
+                request_trailer_mode: SEND
+                response_trailer_mode: SEND
+  # Enable on gpt-4o header rule
+  - applyTo: HTTP_ROUTE
+    match:
+      context: GATEWAY
+      routeConfiguration:
+        vhost:
+          route:
+            name: "llm.maas-model-gpt-4o.1"
+    patch:
+      operation: MERGE
+      value:
+        typed_per_filter_config:
+          envoy.filters.http.ext_proc:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+            overrides:
+              processing_mode:
+                request_header_mode: SEND
+                response_header_mode: SEND
+                request_body_mode: FULL_DUPLEX_STREAMED
+                response_body_mode: FULL_DUPLEX_STREAMED
+                request_trailer_mode: SEND
+                response_trailer_mode: SEND

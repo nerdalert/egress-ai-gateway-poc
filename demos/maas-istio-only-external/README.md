@@ -1,260 +1,383 @@
-# MaaS External Models via Native Istio Resources
+# MaaS External Models with BBR
 
-## Overview
-
-This demo adds external AI model routing to an existing MaaS deployment using
-native Istio resources (ServiceEntry, DestinationRule, ExternalName Service)
-and Gateway API HTTPRoute. No custom controllers or CRDs beyond what MaaS and
-Istio already provide.
-
-## What This Demo Does
-
-Routes requests from the MaaS gateway directly to external AI providers
-(OpenAI, Anthropic) using the same 4-resource pattern validated in the
-[istio-external-model-routing](../istio-external-model-routing/) demo, but
-integrated with the MaaS auth and gateway infrastructure.
-
-| Component | Source |
-|-----------|--------|
-| Gateway | MaaS gateway (`maas-default-gateway` in `openshift-ingress`) |
-| Auth | Kuadrant AuthPolicy (validates MaaS SA token, injects provider API key) |
-| External routing | ServiceEntry + DestinationRule + ExternalName Service |
-| Path routing | HTTPRoute on the MaaS gateway |
-| API key injection | AuthPolicy `response.success.headers` |
+External model inference through MaaS using the ExternalModel reconciler and
+BBR (Body-Based Router) for provider key injection and API translation.
 
 ## Architecture
 
 ```
-Client                   MaaS Gateway                             External Provider
-  |                      (openshift-ingress)                      (api.openai.com)
-  |                           |                                        |
-  | POST /external/openai/    |                                        |
-  |   v1/chat/completions     |                                        |
-  | Auth: Bearer <maas-token> |                                        |
-  |-------------------------->|                                        |
-  |                           |                                        |
-  |                    1. HTTPRoute matches                            |
-  |                       /external/openai/*                           |
-  |                                                                    |
-  |                    2. AuthPolicy validates                         |
-  |                       maas-token via                               |
-  |                       TokenReview                                  |
-  |                                                                    |
-  |                    3. AuthPolicy injects                           |
-  |                       Authorization: Bearer <openai-key>           |
-  |                                                                    |
-  |                    4. RequestHeaderModifier sets                    |
-  |                       Host: api.openai.com                         |
-  |                                                                    |
-  |                    5. ExternalName Service                         |
-  |                       resolves to api.openai.com                   |
-  |                                                                    |
-  |                    6. ServiceEntry allows                          |
-  |                       egress to api.openai.com                     |
-  |                                                                    |
-  |                    7. DestinationRule                               |
-  |                       originates TLS                               |
-  |                           |                                        |
-  |                           | POST /v1/chat/completions              |
-  |                           | Auth: Bearer <openai-key>              |
-  |                           | Host: api.openai.com                   |
-  |                           |--------------------------------------->|
-  |                           |                                        |
-  |                           |<----------------------- 200 OK --------|
-  |<---------- 200 OK -------|                                        |
+Client                   MaaS Gateway              BBR ext-proc              External Provider
+  |                      (openshift-ingress)       (bbr-system)              (api.openai.com)
+  |                           |                        |                          |
+  | POST /gpt-4o/v1/         |                        |                          |
+  |   chat/completions       |                        |                          |
+  | Auth: Bearer <maas-key>  |                        |                          |
+  |------------------------->|                        |                          |
+  |                           |                        |                          |
+  |                    1. Kuadrant Wasm validates       |                          |
+  |                       MaaS API key + subscription  |                          |
+  |                                                    |                          |
+  |                    2. ext-proc sends body to BBR ->|                          |
+  |                                                    |                          |
+  |                           |  3. body-field-to-header: model -> header         |
+  |                           |  4. model-provider-resolver: ExternalModel CR     |
+  |                           |     -> provider=openai, creds=llm/openai-api-key  |
+  |                           |  5. api-translation: format conversion            |
+  |                           |  6. apikey-injection: replaces Auth header         |
+  |                           |     with provider key from Secret                 |
+  |                           |                        |                          |
+  |                           |<-- mutated headers ----|                          |
+  |                           |                                                   |
+  |                    7. ClearRouteCache re-matches                              |
+  |                       to header-based route                                   |
+  |                                                                               |
+  |                    8. ServiceEntry + DestinationRule                           |
+  |                       route to external provider                              |
+  |                           |                                                   |
+  |                           |--------- POST /v1/chat/completions -------------->|
+  |                           |           Auth: Bearer <provider-key>              |
+  |                           |           Host: api.openai.com                    |
+  |                           |                                                   |
+  |                           |<----------------------- 200 OK -------------------|
+  |<---------- 200 OK -------|                                                   |
 ```
-
-### How It Works
-
-| Aspect | Detail |
-|--------|--------|
-| External backend | ServiceEntry + DestinationRule + ExternalName Service (native Istio) |
-| Hop count | 1 hop (MaaS GW -> provider directly) |
-| Controller dependency | None (native Istio resources) |
-| TLS origination | DestinationRule on MaaS gateway |
-| API key injection | AuthPolicy injects Authorization header directly |
 
 ## Prerequisites
 
-### MaaS Deployment
+- OCP cluster with RHOAI/ODH
+- `oc login` with cluster-admin
+- OpenAI API key (or other provider key)
 
-MaaS must be deployed on the cluster. Follow the [MaaS Quickstart](../../maas-quickstart.md)
-to deploy MaaS with a sample model and validate the setup.
+## 0) Deploy MaaS + BBR + Baseline Models
 
-Verify MaaS is running:
-```bash
-kubectl get gateway maas-default-gateway -n openshift-ingress
-kubectl get pods -n opendatahub | grep maas
-kubectl get authpolicy -n openshift-ingress
-```
-
-### API Keys
-
-You need API keys for the providers you want to route to:
-
-| Provider | Where to get a key |
-|----------|--------------------|
-| OpenAI | https://platform.openai.com/api-keys |
-| Anthropic | https://console.anthropic.com/settings/keys |
-
-## Quick Start
-
-### 1. Deploy Istio Egress Resources
-
-These register the external hosts in the mesh and configure TLS origination.
-No secrets — safe to commit.
+### Clone repos
 
 ```bash
-kubectl apply -f manifests/istio-egress-openai.yaml
-kubectl apply -f manifests/istio-egress-anthropic.yaml
+git clone https://github.com/opendatahub-io/models-as-a-service.git
+git clone https://github.com/opendatahub-io/ai-gateway-payload-processing.git
 ```
 
-### 2. Set Your API Keys
+### Deploy MaaS
 
 ```bash
-export OPENAI_API_KEY="sk-proj-your-key-here"
-export ANTHROPIC_API_KEY="sk-ant-your-key-here"
+cd models-as-a-service/
+./scripts/deploy.sh --operator-type odh
+cd ..
 ```
 
-### 3. Generate and Deploy Bridge Resources
-
-The bridge templates contain `{{OPENAI_API_KEY}}` and `{{ANTHROPIC_API_KEY}}`
-placeholders. Generate the final manifests with your keys:
+### Deploy baseline models and subscriptions
 
 ```bash
-sed "s|{{OPENAI_API_KEY}}|$OPENAI_API_KEY|g" \
-  manifests/openai-bridge.template > manifests/openai-bridge.yaml
+kubectl create ns llm --dry-run=client -o yaml | kubectl apply -f -
+kubectl create ns models-as-a-service --dry-run=client -o yaml | kubectl apply -f -
 
-sed "s|{{ANTHROPIC_API_KEY}}|$ANTHROPIC_API_KEY|g" \
-  manifests/anthropic-bridge.template > manifests/anthropic-bridge.yaml
+kustomize build docs/samples/maas-system | kubectl apply -f -
 
-kubectl apply -f manifests/openai-bridge.yaml
-kubectl apply -f manifests/anthropic-bridge.yaml
+kubectl wait --for=condition=Ready llminferenceservice/facebook-opt-125m-simulated -n llm --timeout=300s
 ```
 
-The generated YAML files contain your API keys in plaintext — do not commit them.
-They are listed in `.gitignore`.
-
-### 4. Get MaaS Gateway URL and Token
+### Deploy BBR
 
 ```bash
-# Gateway hostname (needed for Host header)
-export MAAS_HOST=$(kubectl get gateway maas-default-gateway -n openshift-ingress \
-  -o jsonpath='{.spec.listeners[0].hostname}')
+kubectl create ns bbr-system --dry-run=client -o yaml | kubectl apply -f -
 
-# Gateway address (ELB or IP)
-export MAAS_URL=$(kubectl get gateway maas-default-gateway -n openshift-ingress \
-  -o jsonpath='{.status.addresses[0].value}')
+# Build BBR image
+oc -n bbr-system get bc bbr-plugins >/dev/null 2>&1 || \
+  oc -n bbr-system new-build --name=bbr-plugins --binary --strategy=docker --to=bbr-plugins:latest
 
-# MaaS SA token (valid for 1 hour)
-export MAAS_TOKEN=$(kubectl create token default \
-  --audience=maas-default-gateway-sa --duration=1h)
-
-echo "Host: ${MAAS_HOST}"
-echo "URL:  ${MAAS_URL}"
+oc -n bbr-system start-build bbr-plugins \
+  --from-dir=../ai-gateway-payload-processing --follow
 ```
-
-### 5. Test OpenAI Through MaaS
 
 ```bash
-curl -s "http://${MAAS_URL}/external/openai/v1/chat/completions" \
-  -H "Host: ${MAAS_HOST}" \
-  -H "Authorization: Bearer ${MAAS_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
-    "max_tokens": 5
-  }' | jq .
+# Deploy BBR pod + service
+kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bbr-plugins
+  namespace: bbr-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payload-processing
+  namespace: bbr-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bbr-plugins
+  template:
+    metadata:
+      labels:
+        app: bbr-plugins
+    spec:
+      serviceAccountName: bbr-plugins
+      containers:
+      - name: bbr-plugins
+        image: image-registry.openshift-image-registry.svc:5000/bbr-system/bbr-plugins:latest
+        imagePullPolicy: Always
+        args:
+        - --plugin=body-field-to-header:model-extractor:{"field_name":"model","header_name":"X-Gateway-Model-Name"}
+        - --plugin=model-provider-resolver:model-provider-resolver
+        - --plugin=api-translation:api-translation
+        - --plugin=apikey-injection:apikey-injection
+        ports:
+        - name: grpc
+          containerPort: 9004
+        - name: health
+          containerPort: 9005
+        - name: metrics
+          containerPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payload-processing
+  namespace: bbr-system
+spec:
+  selector:
+    app: bbr-plugins
+  ports:
+  - name: grpc
+    port: 9004
+    targetPort: 9004
+  - name: health
+    port: 9005
+    targetPort: 9005
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+YAML
+
+kubectl rollout status deployment/payload-processing -n bbr-system --timeout=180s
 ```
 
-Expected: `{"choices":[{"message":{"content":"4"}}], ...}`
-
-### 6. Test Anthropic Through MaaS
+### BBR RBAC
 
 ```bash
-curl -s "http://${MAAS_URL}/external/anthropic/v1/messages" \
-  -H "Host: ${MAAS_HOST}" \
-  -H "Authorization: Bearer ${MAAS_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-20250514",
-    "messages": [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
-    "max_tokens": 5
-  }' | jq .
+kubectl apply -f - <<'YAML'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bbr-maasmodelref-reader
+rules:
+- apiGroups: ["maas.opendatahub.io"]
+  resources: ["maasmodelrefs"]
+  verbs: ["get","list","watch"]
+- apiGroups: ["maas.opendatahub.io"]
+  resources: ["externalmodels"]
+  verbs: ["get","list","watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get","list","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bbr-maasmodelref-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bbr-maasmodelref-reader
+subjects:
+- kind: ServiceAccount
+  name: bbr-plugins
+  namespace: bbr-system
+YAML
+
+kubectl rollout restart deployment/payload-processing -n bbr-system
+kubectl rollout status deployment/payload-processing -n bbr-system --timeout=180s
 ```
 
-Expected: `{"content":[{"text":"4"}], ...}`
+### Gateway-to-BBR networking
 
-## Resources Created
+```bash
+kubectl apply -f manifests/bbr-serviceentry.yaml
+kubectl apply -f manifests/bbr-destinationrule.yaml
+kubectl apply -f manifests/bbr-envoyfilter.yaml
+```
 
-### Per Provider: Istio Egress Resources (no secrets, safe to commit)
+### Verify BBR
 
-| # | Resource | Purpose |
-|---|----------|---------|
-| 1 | ExternalName Service | DNS bridge for HTTPRoute backendRef |
-| 2 | ServiceEntry | Registers external host in Istio mesh (REGISTRY_ONLY allowlist) |
-| 3 | DestinationRule | TLS origination (HTTP inside mesh -> HTTPS to provider) |
+```bash
+kubectl logs deploy/payload-processing -n bbr-system --tail=10
+```
 
-### Per Provider: Bridge Resources (contain API keys, use templates)
+Expected: plugin registration for `model-provider-resolver`, `api-translation`, `apikey-injection`.
 
-| # | Resource | Purpose |
-|---|----------|---------|
-| 4 | HTTPRoute | Routes `/external/<provider>/*` on the MaaS gateway, rewrites path to `/`, sets Host header |
-| 5 | AuthPolicy | Validates MaaS token, injects provider API key via `response.success.headers` |
-| 6 | TokenRateLimitPolicy | Overrides the gateway-level deny, allows requests for authenticated users |
+## 1) Create External Model
 
-## Auth Flow
+```bash
+# Secret with provider API key (label required for BBR secret watcher)
+kubectl create secret generic openai-api-key -n llm \
+  --from-literal=api-key="$OPENAI_API_KEY" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl label secret openai-api-key -n llm \
+  inference.networking.k8s.io/bbr-managed=true --overwrite
 
-| Step | What Happens |
-|------|-------------|
-| 1 | Client sends request with MaaS SA token (`Authorization: Bearer <maas-token>`) |
-| 2 | AuthPolicy on the HTTPRoute validates the token via `kubernetesTokenReview` |
-| 3 | AuthPolicy extracts userid from the SA token |
-| 4 | AuthPolicy replaces the Authorization header with the provider API key |
-| 5 | HTTPRoute RequestHeaderModifier sets the Host header to the provider FQDN |
-| 6 | Request forwards to the ExternalName Service -> ServiceEntry -> DestinationRule -> provider |
+# ExternalModel CR
+kubectl apply -f - <<'YAML'
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: gpt-4o
+  namespace: llm
+spec:
+  provider: openai
+  endpoint: api.openai.com
+  credentialRef:
+    name: openai-api-key
+YAML
 
-The client authenticates with MaaS. The gateway authenticates with the provider.
-The client never sees the provider API key.
+# MaaSModelRef
+kubectl apply -f - <<'YAML'
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: gpt-4o
+  namespace: llm
+spec:
+  modelRef:
+    kind: ExternalModel
+    name: gpt-4o
+YAML
+```
 
-## Provider Differences
+The reconciler auto-creates in the model namespace (`llm`):
 
-| Aspect | OpenAI | Anthropic |
-|--------|--------|-----------|
-| Auth header injected | `Authorization: Bearer <key>` | `x-api-key: <key>` |
-| Extra headers | None | `anthropic-version: 2023-06-01` |
-| Chat endpoint | `/v1/chat/completions` | `/v1/messages` |
-| Request path | `/external/openai/v1/chat/completions` | `/external/anthropic/v1/messages` |
+| Resource | Name | Purpose |
+|----------|------|---------|
+| ExternalName Service | `maas-model-gpt-4o-backend` | DNS bridge to external FQDN |
+| ServiceEntry | `maas-model-gpt-4o-se` | Registers host in Istio mesh |
+| DestinationRule | `maas-model-gpt-4o-dr` | TLS origination |
+| HTTPRoute | `maas-model-gpt-4o` | Path + header match rules |
+
+Verify:
+```bash
+kubectl get svc,httproute,serviceentry,destinationrule -n llm | grep gpt-4o
+```
+
+## 2) Gateway-to-BBR Networking
+
+Three resources in the gateway namespace connect the gateway proxy to BBR:
+
+```bash
+kubectl apply -f manifests/bbr-serviceentry.yaml
+kubectl apply -f manifests/bbr-destinationrule.yaml
+kubectl apply -f manifests/bbr-envoyfilter.yaml
+```
+
+| Manifest | Why it's needed |
+|----------|----------------|
+| `bbr-serviceentry.yaml` | The gateway proxy has no Envoy cluster for BBR without this. The ext-proc gRPC calls silently fail and `failure_mode_allow` passes the original MaaS key through to the provider unchanged. |
+| `bbr-destinationrule.yaml` | Controls TLS mode for the gateway-to-BBR gRPC connection. Without it, Istio defaults to mTLS which causes 100% `rq_error` on the BBR cluster. Must match BBR's `--secure-serving` flag. |
+| `bbr-envoyfilter.yaml` | The upstream `body-field-to-header` plugin returns a hard error when the request body has no `model` field. Without per-route scoping, every non-inference request (API key minting, health checks, `/maas-api/*`) fails. This filter disables ext-proc by default and enables it only on external model routes. |
+
+The EnvoyFilter must be updated for each new external model. Route names
+follow the pattern `<namespace>.<httproute-name>.<rule-index>`. To discover them:
+
+```bash
+POD=$(kubectl get pod -n openshift-ingress \
+  -l gateway.networking.k8s.io/gateway-name=maas-default-gateway \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n openshift-ingress "$POD" -c istio-proxy -- \
+  pilot-agent request GET config_dump 2>/dev/null | python3 -c "
+import sys,json; data=json.load(sys.stdin)
+for c in data['configs']:
+  for rc in c.get('dynamic_route_configs',[]):
+    for vh in rc.get('route_config',{}).get('virtual_hosts',[]):
+      for r in vh.get('routes',[]):
+        if 'model' in r.get('name',''):
+          print(r['name'], json.dumps(r['match'])[:80])"
+```
+
+## 3) Add to Auth and Subscription
+
+```bash
+kubectl patch maasauthpolicy simulator-access -n models-as-a-service --type=merge -p '{
+  "spec": {
+    "modelRefs": [
+      {"name":"facebook-opt-125m-simulated","namespace":"llm"},
+      {"name":"gpt-4o","namespace":"llm"}
+    ]
+  }
+}'
+
+kubectl patch maassubscription simulator-subscription -n models-as-a-service --type=merge -p '{
+  "spec": {
+    "modelRefs": [
+      {"name":"facebook-opt-125m-simulated","namespace":"llm","tokenRateLimits":[{"limit":100,"window":"1m"}]},
+      {"name":"gpt-4o","namespace":"llm","tokenRateLimits":[{"limit":1000,"window":"1m"}]}
+    ]
+  }
+}'
+```
+
+## 4) Validate
+
+```bash
+HOST=$(kubectl get maasmodelref facebook-opt-125m-simulated -n llm \
+  -o jsonpath='{.status.endpoint}' | sed -E 's#(https://[^/]+).*#\1#')
+TOKEN=$(oc whoami -t)
+
+API_KEY=$(curl -sSk -X POST "$HOST/maas-api/v1/api-keys" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"e2e-key","expiresIn":"2h"}' | jq -r '.key')
+
+# Internal model (expected 200)
+curl -sSk -w '\n%{http_code}\n' "$HOST/llm/facebook-opt-125m-simulated/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"model":"facebook/opt-125m","messages":[{"role":"user","content":"hello"}],"max_tokens":8}' | tail -1
+
+# External model (expected 200 with real key)
+curl -sSk -w '\n%{http_code}\n' "$HOST/gpt-4o/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $API_KEY" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"say hi"}],"max_tokens":8}' | tail -1
+```
+
+## Simulator / Self-Signed Cert Testing
+
+For simulators using self-signed certificates, set `tlsInsecureSkipVerify: true`
+on the ExternalModel CR:
+
+```yaml
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: simulator-model
+  namespace: llm
+spec:
+  provider: openai
+  endpoint: 3.150.113.9
+  tlsInsecureSkipVerify: true
+  credentialRef:
+    name: simulator-api-key
+```
+
+This generates the DestinationRule with `insecureSkipVerify: true`. Per-model,
+so simulator models opt in without weakening production models.
+
+Requires [issue #627](https://github.com/opendatahub-io/models-as-a-service/issues/627).
+
+## Cleanup
+
+```bash
+kubectl delete maasmodelref gpt-4o -n llm
+kubectl delete externalmodel gpt-4o -n llm
+kubectl delete secret openai-api-key -n llm
+kubectl delete -f manifests/ --ignore-not-found
+```
 
 ## Files
 
 ```
 manifests/
-  istio-egress-openai.yaml        # ServiceEntry + DestinationRule + ExternalName Svc for OpenAI
-  istio-egress-anthropic.yaml     # ServiceEntry + DestinationRule + ExternalName Svc for Anthropic
-  openai-bridge.template          # HTTPRoute + AuthPolicy + TRLP (template, {{OPENAI_API_KEY}})
-  openai-bridge.yaml              # Generated from template (git-ignored)
-  anthropic-bridge.template       # HTTPRoute + AuthPolicy + TRLP (template, {{ANTHROPIC_API_KEY}})
-  anthropic-bridge.yaml           # Generated from template (git-ignored)
+  bbr-serviceentry.yaml       # Makes BBR visible to gateway Envoy
+  bbr-destinationrule.yaml    # TLS config for gateway-to-BBR
+  bbr-envoyfilter.yaml        # Per-route ext-proc activation
 ```
-
-## Cleanup
-
-```bash
-kubectl delete -f manifests/openai-bridge.yaml --ignore-not-found
-kubectl delete -f manifests/anthropic-bridge.yaml --ignore-not-found
-kubectl delete -f manifests/istio-egress-openai.yaml --ignore-not-found
-kubectl delete -f manifests/istio-egress-anthropic.yaml --ignore-not-found
-```
-
-## Validated On
-
-| Component | Version / Detail |
-|-----------|-----------------|
-| Platform | OpenShift 4.20.6 (ROSA on AWS) |
-| Istio | v1.29-latest via Sail Operator 1.29.0 |
-| MaaS | Deployed via quickstart with sample model |
-| OpenAI | `gpt-4o-mini` responded `"4"` to `"What is 2+2?"` |
-| Anthropic | `claude-sonnet-4-20250514` responded `"4"` to `"What is 2+2?"` |
-| Auth | MaaS SA token validated, provider key injected by AuthPolicy |

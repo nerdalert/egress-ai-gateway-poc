@@ -1,0 +1,16 @@
+# DestinationRule for the gateway-to-BBR gRPC connection.
+# Must be in the gateway namespace (openshift-ingress) so the gateway proxy applies it.
+#
+# If BBR runs with --secure-serving=true (default), use tls.mode: SIMPLE.
+# If BBR runs with --secure-serving=false, use tls.mode: DISABLE.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: bbr-plugins-tls
+  namespace: openshift-ingress
+spec:
+  host: payload-processing.bbr-system.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

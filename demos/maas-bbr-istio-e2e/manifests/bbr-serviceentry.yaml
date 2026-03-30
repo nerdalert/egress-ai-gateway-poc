@@ -1,0 +1,17 @@
+# ServiceEntry to make BBR gRPC service visible to the gateway's Envoy proxy.
+# Without this, the ext-proc cluster_name reference has no backing cluster and
+# gRPC calls silently fail (failure_mode_allow passes the request through unchanged).
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: bbr-plugins
+  namespace: openshift-ingress
+spec:
+  hosts:
+  - bbr-plugins.redhat-ods-applications.svc.cluster.local
+  location: MESH_INTERNAL
+  resolution: DNS
+  ports:
+  - number: 9004
+    name: grpc
+    protocol: GRPC

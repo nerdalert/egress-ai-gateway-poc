@@ -1,0 +1,17 @@
+# DestinationRule in the gateway namespace to disable mTLS and enable h2c for
+# the BBR gRPC connection. Must be in the gateway namespace (openshift-ingress)
+# because the gateway proxy is the client — a DR in redhat-ods-applications
+# would not be visible to it.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: bbr-plugins-no-tls
+  namespace: openshift-ingress
+spec:
+  host: bbr-plugins.redhat-ods-applications.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      http:
+        h2UpgradePolicy: UPGRADE
+    tls:
+      mode: DISABLE
