@@ -1,6 +1,8 @@
-# PR #662 Validation: payload-processing as MaaS Sub-Component
+# MaaS+BBR Validation: payload-processing as MaaS Sub-Component
 
-PR #662 adds BBR (Body-Based Router) as a MaaS sub-component deployed in the gateway namespace (`openshift-ingress`). BBR runs as an Envoy ext-proc filter that intercepts inference requests and executes a plugin chain: `body-field-to-header` (extract model name) → `model-provider-resolver` (lookup ExternalModel CR for provider + credentials) → `api-translation` (convert OpenAI format to provider-native) → `apikey-injection` (swap MaaS API key with provider key from Secret). Validated end-to-end: MaaS API key minting (201), internal model inference (200), and external model inference to OpenAI gpt-4o via BBR key injection (200).
+### Status Summary _Valid as of 4/4/26_
+
+Latest key PR #662, adds BBR (Body-Based Router) as a MaaS sub-component deployed in the gateway namespace (`openshift-ingress`). BBR runs as an Envoy ext-proc filter that intercepts inference requests and executes a plugin chain: `body-field-to-header` (extract model name) → `model-provider-resolver` (lookup ExternalModel CR for provider + credentials) → `api-translation` (convert OpenAI format to provider-native) → `apikey-injection` (swap MaaS API key with provider key from Secret). Validated end-to-end: MaaS API key minting (201), internal model inference (200), and external model inference to OpenAI gpt-4o via BBR key injection (200).
 
 ### Changes required beyond PR #662 to get e2e working
 
